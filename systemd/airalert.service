@@ -1,0 +1,23 @@
+[Unit]
+Description=AirAlert Telegram Monitor Service
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Replace 'ubuntu' with your VM username
+User=ubuntu
+# Path to your project directory on Cloud VM
+WorkingDirectory=/home/ubuntu/AirAlert_monitor
+# Path to python in your virtualenv
+ExecStart=/home/ubuntu/AirAlert_monitor/venv/bin/python3 main.py
+Restart=always
+RestartSec=10
+KillMode=mixed
+TimeoutStopSec=15
+
+# Standard environment variables
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
