@@ -37,3 +37,12 @@ This repository contains an asynchronous Telegram channel monitoring service bui
 python3 -m unittest tests/run_tests.py
 ```
 For detailed function signatures and call graphs, refer to [docs/PROJECT_STRUCTURE.md](file:///Users/Andru/Downloads/AirAlert_monitor/docs/PROJECT_STRUCTURE.md).
+
+## Target VM Environment (vm-bonus)
+
+- **Host**: `vm-bonus` (Debian GNU/Linux 12 Bookworm, kernel 6.1.0-52-cloud-amd64)
+- **User & Workdir**: `andru_bonus` (`/home/andru_bonus/AirAlert_monitor`)
+- **Virtualenv**: `/home/andru_bonus/telethon_env`
+- **Python Binary**: `/home/andru_bonus/telethon_env/bin/python`
+- **Pip Binary**: `/home/andru_bonus/telethon_env/bin/pip`
+- **Rule**: All commands run under `andru_bonus` using `/home/andru_bonus/telethon_env/bin/python`. All persistence, logs, and sessions stay inside `/home/andru_bonus/`.

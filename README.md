@@ -130,25 +130,26 @@ AirAlert_monitor/
 
 ---
 
-## Cloud VM 1-Click Deployment (Google Cloud / Oracle Cloud)
+## Cloud VM Deployment (vm-bonus / GCP Compute Engine)
 
-1. Clone repository to your VM:
+1. Clone repository to your home directory:
 ```bash
+cd /home/andru_bonus
 git clone https://github.com/OwlBawl/AirAlert_monitor.git
 cd AirAlert_monitor
 ```
-2. Run the automated installer:
+2. Run the automated installer (automatically attaches to `/home/andru_bonus/telethon_env`):
 ```bash
 bash deploy/setup_vm.sh
 ```
 3. Complete first-time phone authentication:
 ```bash
-source venv/bin/activate
-python3 main.py
-# Enter phone number and SMS Telegram login code
-# Verify bot responds to /status in your chat, then press Ctrl+C
+source /home/andru_bonus/telethon_env/bin/activate
+python main.py
+# Enter your phone number and the Telegram verification code
+# Confirm the bot responds to /status in your Telegram chat, then press Ctrl+C
 ```
-4. Enable background service:
+4. Enable the background systemd service:
 ```bash
 sudo cp deploy/airalert.service /etc/systemd/system/
 sudo systemctl daemon-reload

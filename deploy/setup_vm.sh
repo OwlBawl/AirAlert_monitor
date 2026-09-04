@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# AirAlert Monitor — Automated Cloud VM Setup Script (Ubuntu / Debian / Oracle)
+# AirAlert Monitor — Cloud VM Setup Script (Target: vm-bonus / Debian 12)
 # ==============================================================================
 
 set -euo pipefail
@@ -14,50 +14,52 @@ echo "=========================================================="
 
 cd "$PROJECT_ROOT"
 
-# 1. Install system dependencies if apt is available
-if command -v apt-get &> /dev/null; then
-    echo "[1/4] Checking and installing system packages..."
-    sudo apt-get update -y
-    sudo apt-get install -y python3 python3-venv python3-pip
+# 1. Resolve Virtual Environment: Use dedicated telethon_env if present
+if [ -d "/home/andru_bonus/telethon_env" ]; then
+    VENV_DIR="/home/andru_bonus/telethon_env"
+elif [ -d "$HOME/telethon_env" ]; then
+    VENV_DIR="$HOME/telethon_env"
+elif [ -d "$PROJECT_ROOT/venv" ]; then
+    VENV_DIR="$PROJECT_ROOT/venv"
 else
-    echo "[1/4] Non-Debian system detected. Ensure Python 3.10+ and venv are installed."
+    echo "[1/4] Dedicated telethon_env not found. Creating local venv..."
+    python3 -m venv "$PROJECT_ROOT/venv"
+    VENV_DIR="$PROJECT_ROOT/venv"
 fi
 
-# 2. Create Python virtual environment
-if [ ! -d "venv" ]; then
-    echo "[2/4] Creating virtual environment (venv)..."
-    python3 -m venv venv
-else
-    echo "[2/4] Virtual environment already exists."
-fi
+PYTHON_BIN="$VENV_DIR/bin/python"
+PIP_BIN="$VENV_DIR/bin/pip"
 
-# 3. Upgrade pip and install requirements
-echo "[3/4] Installing dependencies from requirements.txt..."
-venv/bin/pip install --upgrade pip
-venv/bin/pip install -r requirements.txt
+echo "[1/4] Using Python environment: $VENV_DIR"
 
-# 4. Check for .env file
+# 2. Upgrade pip and install requirements
+echo "[2/4] Verifying and installing dependencies in $VENV_DIR..."
+"$PIP_BIN" install --upgrade pip
+"$PIP_BIN" install -r requirements.txt
+
+# 3. Check for .env file
 if [ ! -f ".env" ]; then
-    echo "[4/4] Creating .env from .env.example..."
+    echo "[3/4] Creating .env from .env.example..."
     cp .env.example .env
-    echo "⚠️ Please edit .env with your actual TARGET_CHAT_ID and credentials."
+    echo "⚠️ Please edit .env with your actual TARGET_CHAT_ID."
 else
-    echo "[4/4] Existing .env file found."
+    echo "[3/4] Existing .env file found."
 fi
 
-# 5. Run tests to confirm integrity
-echo ""
-echo "Running self-test verification..."
-venv/bin/python3 -m unittest tests/run_tests.py
+# 4. Run tests to confirm integrity
+echo "[4/4] Running self-test verification..."
+"$PYTHON_BIN" -m unittest tests/run_tests.py
 
 echo ""
 echo "=========================================================="
-echo " Setup complete! Next steps:"
-echo " 1. Verify your credentials in .env"
+echo " Setup complete! Next steps on vm-bonus:"
+echo " 1. Verify your TARGET_CHAT_ID in .env"
 echo " 2. Run initial phone authentication:"
-echo "      source venv/bin/activate && python3 main.py"
+echo "      source $VENV_DIR/bin/activate && python main.py"
 echo " 3. Enable background systemd service:"
 echo "      sudo cp deploy/airalert.service /etc/systemd/system/"
 echo "      sudo systemctl daemon-reload"
 echo "      sudo systemctl enable --now airalert.service"
+echo " 4. View logs:"
+echo "      journalctl -u airalert.service -f"
 echo "=========================================================="
