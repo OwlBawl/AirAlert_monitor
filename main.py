@@ -140,14 +140,10 @@ class AirAlertService:
         except Exception as exc:
             logger.warning("Could not pre-load bot dialogs: %s", exc)
 
-        # 3. Start Alert Dispatcher
-        self.dispatcher = AlertDispatcher(self.bot_client, self.config)
-        self.dispatcher.start()
-
-        # 4. Attach Bot command handlers
-        setup_bot_handlers(self.bot_client, self.config, self.store, self.dispatcher)
-
-        # 5. Start User Client (interactive login prompt if session not saved)
+        # 3. Attach Bot command handlers
+        # (Dispatcher initialized after User Client so forwards use subscribed user session)
+        
+        # 4. Start User Client (interactive login prompt if session not saved)
         logger.info("Connecting User Client...")
         await self.user_client.start()
         user_me = await self.user_client.get_me()
@@ -159,7 +155,14 @@ class AirAlertService:
             user_me.id,
         )
 
-        # 6. Attach Channel intake listener to User client
+        # 5. Start Alert Dispatcher (with user_client for native channel forwards)
+        self.dispatcher = AlertDispatcher(self.bot_client, self.config, user_client=self.user_client)
+        self.dispatcher.start()
+
+        # 6. Attach Bot command handlers
+        setup_bot_handlers(self.bot_client, self.config, self.store, self.dispatcher)
+
+        # 7. Attach Channel intake listener to User client
         setup_parser_handlers(self.user_client, self.config, self.store, self.dedup, self.dispatcher)
 
         # 7. Start watchdog heartbeat

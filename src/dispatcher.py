@@ -38,8 +38,14 @@ class AlertJob:
 class AlertDispatcher:
     """Consumes alert jobs from queue, enforcing 1 alert/sec and explicit timeouts."""
 
-    def __init__(self, bot_client: TelegramClient, config: AppConfig) -> None:
+    def __init__(
+        self,
+        bot_client: TelegramClient,
+        config: AppConfig,
+        user_client: Optional[TelegramClient] = None,
+    ) -> None:
         self.bot = bot_client
+        self.user_client = user_client
         self.config = config
         self.queue: asyncio.Queue[AlertJob] = asyncio.Queue(maxsize=config.queue_max_size)
         self.rate_limiter = AlertRateLimiter(min_interval_seconds=config.alert_interval_seconds)
@@ -162,9 +168,14 @@ class AlertDispatcher:
 
         # 1. Native Telegram Forward
         forward_success = False
+        forward_client = (
+            self.user_client
+            if (self.user_client and self.user_client.is_connected())
+            else self.bot
+        )
         try:
             forward_result = await safe_api_call(
-                lambda: self.bot.forward_messages(
+                lambda: forward_client.forward_messages(
                     entity=target_entity,
                     messages=job.message_id,
                     from_peer=job.source_chat_id,

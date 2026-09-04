@@ -56,12 +56,14 @@ def setup_parser_handlers(
                 chat_title = f"{chat.first_name or ''} {chat.last_name or ''}".strip() or "User"
                 chat_username = chat.username
 
-            # 3. Channel Filter: Check if this channel is in monitored channels
+            # 3. Channel Filter: Strictly require channel to be in monitored channels
             monitored_channels = await store.get_channels()
-            if monitored_channels:
-                # When monitored list is configured, restrict to those channels only
-                if not store.is_channel_monitored(chat_id, chat_username):
-                    return
+            if not monitored_channels:
+                # No channels configured yet; ignore messages until channels are added via /add_channel
+                return
+
+            if not store.is_channel_monitored(chat_id, chat_username):
+                return
 
             message_id = event.message.id
 
