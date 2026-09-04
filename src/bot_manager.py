@@ -71,7 +71,7 @@ def setup_bot_handlers(
             action_name="Bot ID Reply",
         )
 
-    @bot.on(events.NewMessage(pattern=r"^/add_key(?:\s+(.+)|$)"))
+    @bot.on(events.NewMessage(pattern=r"^/add_key(?:@\w+)?(?:\s+(.+)|$)"))
     async def handle_add_key(event: events.NewMessage.Event) -> None:
         if not is_authorized_chat(event):
             return
@@ -88,7 +88,7 @@ def setup_bot_handlers(
         else:
             await event.reply(f"ℹ️ Слово вже є у списку: <code>{html.escape(word)}</code>", parse_mode="html")
 
-    @bot.on(events.NewMessage(pattern=r"^/add_critical(?:\s+(.+)|$)"))
+    @bot.on(events.NewMessage(pattern=r"^/add_critical(?:@\w+)?(?:\s+(.+)|$)"))
     async def handle_add_critical(event: events.NewMessage.Event) -> None:
         if not is_authorized_chat(event):
             return
@@ -105,7 +105,7 @@ def setup_bot_handlers(
         else:
             await event.reply(f"ℹ️ Слово вже є у списку критичних: <code>{html.escape(word)}</code>", parse_mode="html")
 
-    @bot.on(events.NewMessage(pattern=r"^/(?:del_key|del_critical)(?:\s+(.+)|$)"))
+    @bot.on(events.NewMessage(pattern=r"^/(?:del_key|del_critical)(?:@\w+)?(?:\s+(.+)|$)"))
     async def handle_del_key(event: events.NewMessage.Event) -> None:
         if not is_authorized_chat(event):
             return
@@ -142,7 +142,7 @@ def setup_bot_handlers(
             action_name="List Keys",
         )
 
-    @bot.on(events.NewMessage(pattern=r"^/add_channel(?:\s+(.+)|$)"))
+    @bot.on(events.NewMessage(pattern=r"^/add_channel(?:@\w+)?(?:\s+(.+)|$)"))
     async def handle_add_channel(event: events.NewMessage.Event) -> None:
         if not is_authorized_chat(event):
             return
@@ -159,7 +159,7 @@ def setup_bot_handlers(
         else:
             await event.reply(f"ℹ️ Канал вже у списку: <code>{html.escape(raw_ch)}</code>", parse_mode="html")
 
-    @bot.on(events.NewMessage(pattern=r"^/del_channel(?:\s+(.+)|$)"))
+    @bot.on(events.NewMessage(pattern=r"^/del_channel(?:@\w+)?(?:\s+(.+)|$)"))
     async def handle_del_channel(event: events.NewMessage.Event) -> None:
         if not is_authorized_chat(event):
             return
