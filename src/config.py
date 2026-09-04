@@ -85,8 +85,13 @@ class AppConfig:
         bot_token = os.getenv("BOT_TOKEN", "5648446763:AAFlWOqmUiSXBZCrRoWkyolzpQe9Nst-ylM").strip()
         target_chat_id = _get_env_int("TARGET_CHAT_ID", 0)
 
-        user_session_name = str(BASE_DIR / os.getenv("USER_SESSION_NAME", "user_session"))
-        bot_session_name = str(BASE_DIR / os.getenv("BOT_SESSION_NAME", "bot_session"))
+        raw_user_session = os.getenv("USER_SESSION_NAME", "user_session").strip()
+        user_path = Path(raw_user_session)
+        user_session_name = str(user_path if user_path.is_absolute() else BASE_DIR / user_path)
+
+        raw_bot_session = os.getenv("BOT_SESSION_NAME", "bot_session").strip()
+        bot_path = Path(raw_bot_session)
+        bot_session_name = str(bot_path if bot_path.is_absolute() else BASE_DIR / bot_path)
 
         keywords_file = DATA_DIR / "keywords.json"
         channels_file = DATA_DIR / "channels.json"

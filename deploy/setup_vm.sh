@@ -39,15 +39,27 @@ echo "[2/4] Verifying and installing dependencies in $VENV_DIR..."
 
 # 3. Check for .env file
 if [ ! -f ".env" ]; then
-    echo "[3/4] Creating .env from .env.example..."
+    echo "[3/5] Creating .env from .env.example..."
     cp .env.example .env
     echo "⚠️ Please edit .env with your actual TARGET_CHAT_ID."
 else
-    echo "[3/4] Existing .env file found."
+    echo "[3/5] Existing .env file found."
 fi
 
-# 4. Run tests to confirm integrity
-echo "[4/4] Running self-test verification..."
+# 4. Detect and reuse existing session files from home directory
+echo "[4/5] Checking for existing Telethon sessions in home directory..."
+if [ -f "$HOME/bot.session" ] && [ ! -f "$PROJECT_ROOT/bot_session.session" ]; then
+    echo "Found existing $HOME/bot.session -> Copying to bot_session.session"
+    cp "$HOME/bot.session" "$PROJECT_ROOT/bot_session.session"
+fi
+
+if [ -f "$HOME/parse_messages.session" ] && [ ! -f "$PROJECT_ROOT/user_session.session" ]; then
+    echo "Found existing $HOME/parse_messages.session -> Copying to user_session.session"
+    cp "$HOME/parse_messages.session" "$PROJECT_ROOT/user_session.session"
+fi
+
+# 5. Run tests to confirm integrity
+echo "[5/5] Running self-test verification..."
 "$PYTHON_BIN" -m unittest tests/run_tests.py
 
 echo ""
