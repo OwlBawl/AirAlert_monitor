@@ -133,6 +133,13 @@ class AirAlertService:
         bot_me = await self.bot_client.get_me()
         logger.info("Bot Client connected successfully as @%s (id=%s)", bot_me.username, bot_me.id)
 
+        # Pre-load bot dialogs so Telethon caches group entity access hashes
+        try:
+            bot_dialogs = await self.bot_client.get_dialogs()
+            logger.info("Bot loaded %d active dialogs from Telegram server.", len(bot_dialogs))
+        except Exception as exc:
+            logger.warning("Could not pre-load bot dialogs: %s", exc)
+
         # 3. Start Alert Dispatcher
         self.dispatcher = AlertDispatcher(self.bot_client, self.config)
         self.dispatcher.start()

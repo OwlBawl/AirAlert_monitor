@@ -30,10 +30,23 @@ def setup_bot_handlers(
 
     def is_authorized_chat(event: events.NewMessage.Event) -> bool:
         """Check if message is from the authorized target chat or DM."""
+        is_auth = False
         if config.target_chat_id == 0:
-            # If target chat is unconfigured, allow in any chat so user can find chat ID
-            return True
-        return event.chat_id == config.target_chat_id
+            is_auth = True
+        elif event.chat_id == config.target_chat_id:
+            is_auth = True
+        else:
+            # Check alternative ID formats (-100... vs -...)
+            str_target = str(config.target_chat_id)
+            if str_target.startswith("-100") and event.chat_id == int("-" + str_target[4:]):
+                is_auth = True
+            elif str_target.startswith("-") and not str_target.startswith("-100") and event.chat_id == int("-100" + str_target[1:]):
+                is_auth = True
+
+        if is_auth and event.chat:
+            dispatcher.set_target_entity(event.chat)
+
+        return is_auth
 
     @bot.on(events.NewMessage(pattern=r"^/(?:start|help)(?:@\w+)?$"))
     async def handle_help(event: events.NewMessage.Event) -> None:

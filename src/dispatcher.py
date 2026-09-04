@@ -45,6 +45,62 @@ class AlertDispatcher:
         self.rate_limiter = AlertRateLimiter(min_interval_seconds=config.alert_interval_seconds)
         self._worker_task: Optional[asyncio.Task[None]] = None
         self._running = False
+        self._target_entity: Optional[Any] = None
+
+    async def resolve_target_entity(self) -> Optional[Any]:
+        """Resolve and cache target chat entity, querying dialogs or trying ID variations."""
+        if self._target_entity is not None:
+            return self._target_entity
+
+        target_id = self.config.target_chat_id
+        if not target_id:
+            return None
+
+        # 1. Try configured ID directly
+        try:
+            entity = await self.bot.get_entity(target_id)
+            self._target_entity = entity
+            return entity
+        except Exception:
+            pass
+
+        # 2. Try alternate ID format (e.g. -1005392246014 <-> -5392246014)
+        alt_id: Optional[int] = None
+        str_id = str(target_id)
+        if str_id.startswith("-100"):
+            alt_id = int("-" + str_id[4:])
+        elif str_id.startswith("-"):
+            alt_id = int("-100" + str_id[1:])
+
+        if alt_id is not None:
+            try:
+                entity = await self.bot.get_entity(alt_id)
+                self._target_entity = entity
+                logger.info("Resolved target chat using alternate ID: %d", alt_id)
+                return entity
+            except Exception:
+                pass
+
+        # 3. Refresh bot dialogs to sync entity cache from Telegram
+        try:
+            dialogs = await self.bot.get_dialogs()
+            for d in dialogs:
+                if d.id == target_id or (alt_id and d.id == alt_id):
+                    self._target_entity = d.entity
+                    return self._target_entity
+        except Exception:
+            pass
+
+        logger.warning(
+            "Could not resolve target chat %d. Ensure @%s is added to the group and has sent/received a message.",
+            target_id,
+            (await self.bot.get_me()).username,
+        )
+        return None
+
+    def set_target_entity(self, entity: Any) -> None:
+        """Cache entity directly when received from a group event."""
+        self._target_entity = entity
 
     def enqueue(self, job: AlertJob) -> bool:
         """Add an alert job to the queue without blocking. Discards if queue is overloaded."""
@@ -96,9 +152,9 @@ class AlertDispatcher:
 
     async def _dispatch_single_alert(self, job: AlertJob) -> None:
         """Forward original message and deliver accompanying banner."""
-        target_chat = self.config.target_chat_id
-        if not target_chat:
-            logger.warning("TARGET_CHAT_ID is not configured. Alert not sent to Telegram.")
+        target_entity = await self.resolve_target_entity()
+        if not target_entity:
+            logger.warning("Target chat entity not resolved. Alert queued/dropped.")
             return
 
         is_critical = job.match.tier == "critical"
@@ -109,7 +165,7 @@ class AlertDispatcher:
         try:
             forward_result = await safe_api_call(
                 lambda: self.bot.forward_messages(
-                    entity=target_chat,
+                    entity=target_entity,
                     messages=job.message_id,
                     from_peer=job.source_chat_id,
                     silent=disable_sound,
@@ -158,7 +214,7 @@ class AlertDispatcher:
         # 4. Send the banner message with explicit sound flag
         await safe_api_call(
             lambda: self.bot.send_message(
-                entity=target_chat,
+                entity=target_entity,
                 message=banner,
                 parse_mode="html",
                 silent=disable_sound,
