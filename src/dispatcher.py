@@ -164,75 +164,51 @@ class AlertDispatcher:
             return
 
         is_critical = job.match.tier == "critical"
-        disable_sound = not is_critical  # Sound always ON for critical, silent for standard
+        disable_sound = not is_critical  # Sound ON for critical, silent for standard
 
-        # 1. Native Telegram Forward
-        forward_success = False
-        forward_client = (
-            self.user_client
-            if (self.user_client and self.user_client.is_connected())
-            else self.bot
-        )
-        try:
-            forward_result = await safe_api_call(
-                lambda: forward_client.forward_messages(
-                    entity=target_entity,
-                    messages=job.message_id,
-                    from_peer=job.source_chat_id,
-                    silent=disable_sound,
-                ),
-                timeout_seconds=self.config.api_timeout_seconds,
-                action_name="Native Message Forward",
-            )
-            if forward_result:
-                forward_success = True
-        except Exception as exc:
-            logger.warning("Native forward failed (possible protected content): %s", exc)
+        # 1. Quoted message text at the top (without extra description)
+        clean_text = job.message_text.strip()
+        if len(clean_text) > 3500:
+            clean_text = clean_text[:3500] + "..."
+        quoted_text = f"<blockquote>{html.escape(clean_text)}</blockquote>"
 
-        # 2. Build message link if public username or channel ID
-        if job.source_chat_username:
-            link = f"https://t.me/{job.source_chat_username}/{job.message_id}"
-            source_display = f'<a href="{link}">{html.escape(job.source_chat_title)}</a>'
-        else:
-            source_display = f"<b>{html.escape(job.source_chat_title)}</b>"
-
-        matched_str = ", ".join(f"<code>{html.escape(w)}</code>" for w in job.match.matched_words)
-        timestamp_str = job.message_date.strftime("%Y-%m-%d %H:%M:%S")
-
-        # 3. High-visibility banner
+        # 2. Key indicator
+        matched_str = ", ".join(job.match.matched_words)
         if is_critical:
-            banner = (
-                "🚨🚨🚨 <b>КРИТИЧНА ТРИВОГА / CRITICAL ALERT</b> 🚨🚨🚨\n"
-                f"🎯 <b>Ключові слова:</b> {matched_str}\n"
-                f"📢 <b>Джерело:</b> {source_display}\n"
-                f"⏰ <b>Час:</b> {timestamp_str} UTC\n"
-            )
+            key_line = f"🚨 <b>Ключ:</b> {html.escape(matched_str)}"
         else:
-            banner = (
-                "⚠️ <b>СПОВІЩЕННЯ / KEYWORD ALERT</b> ⚠️\n"
-                f"🎯 <b>Ключові слова:</b> {matched_str}\n"
-                f"📢 <b>Джерело:</b> {source_display}\n"
-                f"⏰ <b>Час:</b> {timestamp_str} UTC\n"
-            )
+            key_line = f"🎯 <b>Ключ:</b> {html.escape(matched_str)}"
 
-        # If forward failed (e.g. forward restricted by channel), include preview excerpt
-        if not forward_success and job.message_text:
-            snippet = html.escape(job.message_text[:400])
-            if len(job.message_text) > 400:
-                snippet += "..."
-            banner += f"\n💬 <b>Текст повідомлення:</b>\n<blockquote>{snippet}</blockquote>"
+        # 3. Source channel name
+        source_line = f"📢 <b>Джерело:</b> {html.escape(job.source_chat_title)}"
 
-        # 4. Send the banner message with explicit sound flag
+        # 4. Direct link to message
+        if job.source_chat_username:
+            msg_link = f"https://t.me/{job.source_chat_username}/{job.message_id}"
+        else:
+            clean_id = str(job.source_chat_id).replace("-100", "").replace("-", "")
+            msg_link = f"https://t.me/c/{clean_id}/{job.message_id}"
+        link_line = f"🔗 {msg_link}"
+
+        # Clean compact alert card
+        alert_message = (
+            f"{quoted_text}\n\n"
+            f"{key_line}\n"
+            f"{source_line}\n"
+            f"{link_line}"
+        )
+
+        # 5. Send the alert card with explicit sound flag
         await safe_api_call(
             lambda: self.bot.send_message(
                 entity=target_entity,
-                message=banner,
+                message=alert_message,
                 parse_mode="html",
                 silent=disable_sound,
                 link_preview=False,
             ),
             timeout_seconds=self.config.api_timeout_seconds,
-            action_name="Alert Banner Send",
+            action_name="Alert Send",
         )
 
         metrics.alerts_forwarded += 1
