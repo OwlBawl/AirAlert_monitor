@@ -15,9 +15,9 @@ from typing import Optional
 
 from telethon import TelegramClient
 
-from config import AppConfig
-from safety import AlertRateLimiter, metrics, safe_api_call
-from storage import KeywordMatch
+from src.config import AppConfig
+from src.safety import AlertRateLimiter, metrics, safe_api_call
+from src.storage import KeywordMatch
 
 logger = logging.getLogger("AirAlert.Dispatcher")
 

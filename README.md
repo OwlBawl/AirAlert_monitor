@@ -97,40 +97,68 @@ Any member inside the destination alert chat can manage the vocabulary dynamical
 | `/list_channels` | List all channels currently monitored |
 | `/status` | View uptime, messages scanned, alerts sent, queue size, and error metrics |
 
+## Project Structure
+
+```
+AirAlert_monitor/
+├── src/                    # Application source code
+│   ├── config.py           # Environment & settings loader
+│   ├── safety.py           # Anti-hang, rate-limiter & deduplication
+│   ├── storage.py          # Dynamic keywords/channels store & regex
+│   ├── dispatcher.py       # Queue consumer & forwarder
+│   ├── parser.py           # UserClient channel intake listener
+│   └── bot_manager.py      # Bot commands router (/add_key, etc.)
+├── data/                   # Dynamic JSON data files
+│   ├── keywords.json       # Tiered keywords (standard & critical)
+│   └── channels.json       # Monitored channel IDs / usernames
+├── deploy/                 # Deployment scripts & systemd units
+│   ├── setup_vm.sh         # Automated 1-click VM setup script
+│   └── airalert.service    # Systemd service definition
+├── docs/                   # Internal architecture & design documents
+│   ├── PROJECT_STRUCTURE.md
+│   ├── IMPLEMENTATION_PLAN.md
+│   └── WALKTHROUGH.md
+├── tests/                  # Unit and integration test suite
+│   ├── run_tests.py
+│   └── test_safety_and_matching.py
+├── main.py                 # Clean root service entrypoint
+├── requirements.txt        # Dependencies
+├── .env.example            # Environment template
+├── README.md               # User guide
+└── AGENTS.md               # AI & agent context specification
+```
+
 ---
 
-## Cloud VM Deployment (Google Cloud / Oracle Cloud)
+## Cloud VM 1-Click Deployment (Google Cloud / Oracle Cloud)
 
-1. Copy repository to VM:
+1. Clone repository to your VM:
 ```bash
-scp -r AirAlert_monitor user@<vm_ip>:~/AirAlert_monitor
+git clone https://github.com/OwlBawl/AirAlert_monitor.git
+cd AirAlert_monitor
 ```
-2. Install dependencies on VM:
+2. Run the automated installer:
 ```bash
-sudo apt update && sudo apt install -y python3-venv python3-pip
-cd ~/AirAlert_monitor
-python3 -m venv venv
+bash deploy/setup_vm.sh
+```
+3. Complete first-time phone authentication:
+```bash
 source venv/bin/activate
-pip install -r requirements.txt
-```
-3. Run once manually to complete phone authentication:
-```bash
 python3 main.py
-# Enter phone number and Telegram verification code
-# Test that /status responds in your Telegram chat
-# Press Ctrl+C to stop
+# Enter phone number and SMS Telegram login code
+# Verify bot responds to /status in your chat, then press Ctrl+C
 ```
-4. Install systemd service:
+4. Enable background service:
 ```bash
-sudo cp systemd/airalert.service /etc/systemd/system/
+sudo cp deploy/airalert.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now airalert.service
 ```
-5. View logs:
+5. View live logs:
 ```bash
 journalctl -u airalert.service -f
 # or
-tail -f ~/AirAlert_monitor/airalert.log
+tail -f airalert.log
 ```
 
 ---
@@ -147,6 +175,8 @@ python3 -m unittest tests/run_tests.py
 ## Technical Documentation & Architecture Reference
 
 For detailed module-by-module breakdown, function signatures, data flow diagrams, and invariant guarantees, see:
-- [PROJECT_STRUCTURE.md](file:///Users/Andru/Downloads/AirAlert_monitor/PROJECT_STRUCTURE.md)
+- [docs/PROJECT_STRUCTURE.md](file:///Users/Andru/Downloads/AirAlert_monitor/docs/PROJECT_STRUCTURE.md)
+- [docs/WALKTHROUGH.md](file:///Users/Andru/Downloads/AirAlert_monitor/docs/WALKTHROUGH.md)
 - [AGENTS.md](file:///Users/Andru/Downloads/AirAlert_monitor/AGENTS.md)
+
 

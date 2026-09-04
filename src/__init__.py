@@ -1,0 +1,1 @@
+"""AirAlert Telegram monitor package."""

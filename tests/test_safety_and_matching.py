@@ -6,11 +6,17 @@ import asyncio
 import json
 import tempfile
 import time
+import sys
 from pathlib import Path
 import pytest
 
-from safety import AlertRateLimiter, DeduplicationCache, safe_api_call
-from storage import DynamicStore
+# Ensure project root is on sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.safety import AlertRateLimiter, DeduplicationCache, safe_api_call
+from src.storage import DynamicStore
 
 
 @pytest.mark.asyncio

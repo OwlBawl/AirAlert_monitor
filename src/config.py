@@ -12,8 +12,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Base directory paths
-BASE_DIR = Path(__file__).resolve().parent
+# Base directory paths (points to project root)
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = BASE_DIR / "data"
 ENV_FILE = BASE_DIR / ".env"
 
 if ENV_FILE.exists():
@@ -84,8 +85,8 @@ class AppConfig:
         user_session_name = str(BASE_DIR / os.getenv("USER_SESSION_NAME", "user_session"))
         bot_session_name = str(BASE_DIR / os.getenv("BOT_SESSION_NAME", "bot_session"))
 
-        keywords_file = BASE_DIR / "keywords.json"
-        channels_file = BASE_DIR / "channels.json"
+        keywords_file = DATA_DIR / "keywords.json"
+        channels_file = DATA_DIR / "channels.json"
 
         alert_interval_seconds = _get_env_float("ALERT_INTERVAL_SECONDS", 1.0)
         api_timeout_seconds = _get_env_float("API_TIMEOUT_SECONDS", 10.0)

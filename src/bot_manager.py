@@ -12,10 +12,10 @@ from typing import Optional
 
 from telethon import TelegramClient, events
 
-from config import AppConfig
-from dispatcher import AlertDispatcher
-from safety import metrics, safe_api_call
-from storage import DynamicStore
+from src.config import AppConfig
+from src.dispatcher import AlertDispatcher
+from src.safety import metrics, safe_api_call
+from src.storage import DynamicStore
 
 logger = logging.getLogger("AirAlert.BotManager")
 

@@ -13,10 +13,10 @@ from typing import Optional
 from telethon import TelegramClient, events
 from telethon.tl.types import Channel, Chat, User
 
-from config import AppConfig
-from dispatcher import AlertDispatcher, AlertJob
-from safety import DeduplicationCache, metrics
-from storage import DynamicStore
+from src.config import AppConfig
+from src.dispatcher import AlertDispatcher, AlertJob
+from src.safety import DeduplicationCache, metrics
+from src.storage import DynamicStore
 
 logger = logging.getLogger("AirAlert.Parser")
 

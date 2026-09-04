@@ -14,12 +14,12 @@ from typing import Optional
 
 from telethon import TelegramClient
 
-from bot_manager import setup_bot_handlers
-from config import config
-from dispatcher import AlertDispatcher
-from parser import setup_parser_handlers
-from safety import DeduplicationCache, metrics, safe_api_call
-from storage import DynamicStore
+from src.bot_manager import setup_bot_handlers
+from src.config import config
+from src.dispatcher import AlertDispatcher
+from src.parser import setup_parser_handlers
+from src.safety import DeduplicationCache, metrics, safe_api_call
+from src.storage import DynamicStore
 
 # Configure logging
 logging.basicConfig(
