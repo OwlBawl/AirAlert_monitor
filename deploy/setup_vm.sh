@@ -46,13 +46,8 @@ else
     echo "[3/5] Existing .env file found."
 fi
 
-# 4. Detect and reuse existing session files from home directory
-echo "[4/5] Checking for existing Telethon sessions in home directory..."
-if [ -f "$HOME/bot.session" ] && [ ! -f "$PROJECT_ROOT/bot_session.session" ]; then
-    echo "Found existing $HOME/bot.session -> Copying to bot_session.session"
-    cp "$HOME/bot.session" "$PROJECT_ROOT/bot_session.session"
-fi
-
+# 4. Detect and reuse existing User session from home directory
+echo "[4/5] Checking for existing Telethon user session in home directory..."
 if [ -f "$HOME/parse_messages.session" ] && [ ! -f "$PROJECT_ROOT/user_session.session" ]; then
     echo "Found existing $HOME/parse_messages.session -> Copying to user_session.session"
     cp "$HOME/parse_messages.session" "$PROJECT_ROOT/user_session.session"
