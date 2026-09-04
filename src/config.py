@@ -67,12 +67,15 @@ class AppConfig:
     keywords_file: Path
     channels_file: Path
 
-    # Safety and Timing Settings
+    # Safety, Memory and Timing Settings
     alert_interval_seconds: float
     api_timeout_seconds: float
     heartbeat_interval_seconds: float
     dedup_ttl_seconds: float
     dedup_max_size: int
+    queue_max_size: int
+    log_max_bytes: int
+    log_backup_count: int
 
     @classmethod
     def load(cls) -> AppConfig:
@@ -92,7 +95,10 @@ class AppConfig:
         api_timeout_seconds = _get_env_float("API_TIMEOUT_SECONDS", 10.0)
         heartbeat_interval_seconds = _get_env_float("HEARTBEAT_INTERVAL_SECONDS", 30.0)
         dedup_ttl_seconds = _get_env_float("DEDUP_TTL_SECONDS", 3600.0)
-        dedup_max_size = _get_env_int("DEDUP_MAX_SIZE", 5000)
+        dedup_max_size = _get_env_int("DEDUP_MAX_SIZE", 500)
+        queue_max_size = _get_env_int("QUEUE_MAX_SIZE", 100)
+        log_max_bytes = _get_env_int("LOG_MAX_BYTES", 10 * 1024 * 1024)  # 10 MB
+        log_backup_count = _get_env_int("LOG_BACKUP_COUNT", 5)
 
         return cls(
             api_id=api_id,
@@ -108,6 +114,9 @@ class AppConfig:
             heartbeat_interval_seconds=heartbeat_interval_seconds,
             dedup_ttl_seconds=dedup_ttl_seconds,
             dedup_max_size=dedup_max_size,
+            queue_max_size=queue_max_size,
+            log_max_bytes=log_max_bytes,
+            log_backup_count=log_backup_count,
         )
 
 

@@ -41,7 +41,7 @@ class AlertDispatcher:
     def __init__(self, bot_client: TelegramClient, config: AppConfig) -> None:
         self.bot = bot_client
         self.config = config
-        self.queue: asyncio.Queue[AlertJob] = asyncio.Queue(maxsize=1000)
+        self.queue: asyncio.Queue[AlertJob] = asyncio.Queue(maxsize=config.queue_max_size)
         self.rate_limiter = AlertRateLimiter(min_interval_seconds=config.alert_interval_seconds)
         self._worker_task: Optional[asyncio.Task[None]] = None
         self._running = False

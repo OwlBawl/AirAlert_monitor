@@ -32,14 +32,16 @@ Production-grade, dual-client Telegram monitoring system built with Telethon. Li
 
 | Risk | Protective Mechanism | Location |
 | :--- | :--- | :--- |
-| **API Hangs & Network Stalls** | Strict `asyncio.wait_for(..., timeout=10.0)` escape mechanism wraps every Telegram API call. | `safety.py:safe_api_call` |
-| **Infinite Forwarding Loops** | Hard-coded blacklist rejecting any messages originating from or sent to `TARGET_CHAT_ID`. | `parser.py` |
-| **Duplicate Alerts & Edits** | LRU/TTL Cache `(chat_id, message_id)` prevents repeated alerts for identical posts. | `safety.py:DeduplicationCache` |
-| **Telegram Flood & Spam** | Async queue worker enforcing a maximum rate of 1 alert per second. | `safety.py:AlertRateLimiter` |
-| **Telegram FloodWait Ban** | Dynamic `FloodWaitError` catch with sleep backoff to protect account from suspension. | `safety.py:safe_api_call` |
+| **API Hangs & Network Stalls** | Strict `asyncio.wait_for(..., timeout=10.0)` escape mechanism wraps every Telegram API call. | `src/safety.py:safe_api_call` |
+| **Infinite Forwarding Loops** | Hard-coded blacklist rejecting any messages originating from or sent to `TARGET_CHAT_ID`. | `src/parser.py` |
+| **Duplicate Alerts & Edits** | LRU/TTL Cache `(chat_id, message_id)` prevents repeated alerts for identical posts. | `src/safety.py:DeduplicationCache` |
+| **Telegram Flood & Spam** | Async queue worker enforcing a maximum rate of 1 alert per second. | `src/safety.py:AlertRateLimiter` |
+| **Telegram FloodWait Ban** | Dynamic `FloodWaitError` catch with sleep backoff to protect account from suspension. | `src/safety.py:safe_api_call` |
+| **Memory Growth & Leaks** | Hard caps (500 dedup items, 100 queue jobs), active 30s TTL sweeps, and periodic 5m `gc.collect()`. | `src/safety.py`, `main.py` |
+| **Unbounded Log Growth** | `RotatingFileHandler` capped at 10MB per file with 5 backups (50MB absolute disk ceiling). | `main.py` |
 | **Silent Disconnects on VM** | Background watchdog task running every 30 seconds to ping sessions and auto-reconnect. | `main.py:_heartbeat_loop` |
-| **Process Management & Crashes** | Clean signal handling (`SIGINT`, `SIGTERM`) + `systemd` auto-restart service unit. | `systemd/airalert.service` |
-| **Data Corruption on Powerloss**| Atomic file persistence via temporary file rename (`atomic_write_json`). | `storage.py` |
+| **Process Management & Crashes** | Clean signal handling (`SIGINT`, `SIGTERM`) + `systemd` auto-restart service unit. | `deploy/airalert.service` |
+| **Data Corruption on Powerloss**| Atomic file persistence via temporary file rename (`atomic_write_json`). | `src/storage.py` |
 
 ---
 

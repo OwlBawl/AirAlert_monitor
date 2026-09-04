@@ -64,6 +64,22 @@ class DeduplicationCache:
             self._cache[key] = now
             return False
 
+    async def clean_expired(self) -> int:
+        """Active memory sweep: evicts all entries older than TTL. Returns number of purged items."""
+        now = time.monotonic()
+        cutoff = now - self._ttl_seconds
+        evicted = 0
+        async with self._lock:
+            # OrderedDict maintains insertion order; oldest entries are at the beginning
+            while self._cache:
+                oldest_key, oldest_time = next(iter(self._cache.items()))
+                if oldest_time < cutoff:
+                    del self._cache[oldest_key]
+                    evicted += 1
+                else:
+                    break
+        return evicted
+
     async def size(self) -> int:
         """Return current cache count."""
         async with self._lock:

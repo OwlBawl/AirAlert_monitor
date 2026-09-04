@@ -88,6 +88,18 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
         is_dup4 = await cache.check_and_add(1001, 555)
         self.assertFalse(is_dup4)
 
+    async def test_deduplication_clean_expired(self) -> None:
+        cache = DeduplicationCache(max_size=500, ttl_seconds=0.2)
+        await cache.check_and_add(1, 100)
+        await cache.check_and_add(1, 101)
+        self.assertEqual(await cache.size(), 2)
+
+        # Wait for expiry
+        await asyncio.sleep(0.25)
+        purged = await cache.clean_expired()
+        self.assertEqual(purged, 2)
+        self.assertEqual(await cache.size(), 0)
+
     async def test_rate_limiter_pacing(self) -> None:
         interval = 0.15
         limiter = AlertRateLimiter(min_interval_seconds=interval)

@@ -7,9 +7,11 @@ watchdog heartbeat, and graceful shutdown signal handlers.
 from __future__ import annotations
 
 import asyncio
+import gc
 import logging
 import signal
 import sys
+from logging.handlers import RotatingFileHandler
 from typing import Optional
 
 from telethon import TelegramClient
@@ -21,13 +23,18 @@ from src.parser import setup_parser_handlers
 from src.safety import DeduplicationCache, metrics, safe_api_call
 from src.storage import DynamicStore
 
-# Configure logging
+# Configure logging with strict file size cap and automatic rotation (max 10MB x 5 backups)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("airalert.log", encoding="utf-8"),
+        RotatingFileHandler(
+            "airalert.log",
+            maxBytes=config.log_max_bytes,
+            backupCount=config.log_backup_count,
+            encoding="utf-8",
+        ),
     ],
 )
 logger = logging.getLogger("AirAlert.Main")
@@ -89,15 +96,24 @@ class AirAlertService:
                         action_name="Bot Client Reconnect",
                     )
 
-                # Log periodic status report every 10 iterations (~5 minutes)
+                # Active memory reclamation: sweep expired message IDs from cache
+                purged_count = await self.dedup.clean_expired()
+                if purged_count > 0:
+                    logger.debug("Watchdog: Evicted %d expired message IDs from dedup cache.", purged_count)
+
+                # Periodic deep health report & GC sweep every 10 iterations (~5 minutes)
                 if iteration % 10 == 0:
+                    gc_collected = gc.collect()
+                    qsize = self.dispatcher.queue.qsize() if self.dispatcher else 0
                     logger.info(
-                        "Health status: uptime=%s, scanned=%d, matched=%d, forwarded=%d, dedup_size=%d",
+                        "Health status: uptime=%s, scanned=%d, matched=%d, forwarded=%d, queue=%d, dedup_size=%d (gc_collected=%d)",
                         metrics.get_uptime_str(),
                         metrics.messages_scanned,
                         metrics.keywords_matched,
                         metrics.alerts_forwarded,
+                        qsize,
                         await self.dedup.size(),
+                        gc_collected,
                     )
             except asyncio.CancelledError:
                 break

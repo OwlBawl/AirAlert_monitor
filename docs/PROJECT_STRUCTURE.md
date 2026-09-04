@@ -38,35 +38,39 @@ A comprehensive developer and AI context guide detailing the architecture, modul
 
 ```
 AirAlert_monitor/
-├── .antigravityignore          # Workspace exclusion rules
-├── .env.example                # Configuration template
-├── .env                        # Active environment credentials & config
-├── config.py                   # Environment loader & AppConfig dataclass
-├── safety.py                   # DeduplicationCache, AlertRateLimiter, safe_api_call
-├── storage.py                  # DynamicStore, KeywordMatch, atomic JSON writes
-├── dispatcher.py               # AlertDispatcher, AlertJob queue consumer
-├── parser.py                   # User client listener, filtering & intake
-├── bot_manager.py              # Bot client command router (/add_key, /status, etc.)
-├── main.py                     # Entrypoint: AirAlertService orchestrator & watchdog
-├── keywords.json               # Dynamic JSON: critical & standard keywords
-├── channels.json               # Dynamic JSON: monitored channels/groups
-├── requirements.txt            # Python dependencies
-├── README.md                   # User guide, commands, setup, and deployment
-├── PROJECT_STRUCTURE.md        # This comprehensive functional specification
-├── IMPLEMENTATION_PLAN.md      # Approved architectural specifications
-├── WALKTHROUGH.md              # Test execution & verification log
-├── systemd/
-│   └── airalert.service        # Systemd service unit for Google/Oracle Cloud VM
-└── tests/
-    ├── run_tests.py            # Standalone test runner (unittest)
-    └── test_safety_and_matching.py # Pytest test suite
+├── src/                    # Application source code
+│   ├── __init__.py
+│   ├── config.py           # Environment & AppConfig schema
+│   ├── safety.py           # DeduplicationCache, AlertRateLimiter, safe_api_call
+│   ├── storage.py          # DynamicStore, KeywordMatch, atomic JSON writes
+│   ├── dispatcher.py       # AlertDispatcher, AlertJob queue consumer
+│   ├── parser.py           # User client listener, filtering & intake
+│   └── bot_manager.py      # Bot client command router (/add_key, /status, etc.)
+├── data/                   # Dynamic JSON data files
+│   ├── keywords.json       # Dynamic JSON: critical & standard keywords
+│   └── channels.json       # Dynamic JSON: monitored channels/groups
+├── deploy/                 # Deployment scripts & systemd units
+│   ├── setup_vm.sh         # 1-click cloud VM setup script (vm-bonus)
+│   └── airalert.service    # Systemd service unit (andru_bonus)
+├── docs/                   # Internal architecture & design documents
+│   ├── PROJECT_STRUCTURE.md
+│   ├── IMPLEMENTATION_PLAN.md
+│   └── WALKTHROUGH.md
+├── tests/                  # Unit and integration test suite
+│   ├── run_tests.py
+│   └── test_safety_and_matching.py
+├── main.py                 # Entrypoint: AirAlertService orchestrator & watchdog
+├── requirements.txt        # Python dependencies
+├── .env.example            # Configuration template
+├── README.md               # User guide, commands, setup, and deployment
+└── AGENTS.md               # AI & agent context specification
 ```
 
 ---
 
 ## 3. Module & Function Reference
 
-### `config.py`
+### `src/config.py`
 Provides typed, validated configuration loading with fallbacks.
 
 - **`_get_env_int(key: str, default: int) -> int`**:
@@ -74,19 +78,20 @@ Provides typed, validated configuration loading with fallbacks.
 - **`_get_env_float(key: str, default: float) -> float`**:
   Safe parser for floating-point environment variables.
 - **`class AppConfig`** (Frozen dataclass):
-  - Attributes: `api_id`, `api_hash`, `bot_token`, `target_chat_id`, `user_session_name`, `bot_session_name`, `keywords_file`, `channels_file`, `alert_interval_seconds`, `api_timeout_seconds`, `heartbeat_interval_seconds`, `dedup_ttl_seconds`, `dedup_max_size`.
+  - Attributes: `api_id`, `api_hash`, `bot_token`, `target_chat_id`, `user_session_name`, `bot_session_name`, `keywords_file`, `channels_file`, `alert_interval_seconds`, `api_timeout_seconds`, `heartbeat_interval_seconds`, `dedup_ttl_seconds`, `dedup_max_size` (default: 500), `queue_max_size` (default: 100), `log_max_bytes` (default: 10MB), `log_backup_count` (default: 5).
   - `load() -> AppConfig`: Factory method constructing configuration from `.env` and environment variables.
 - **`config: AppConfig`**:
   Global singleton configuration instance.
 
 ---
 
-### `safety.py`
+### `src/safety.py`
 Protects the service against hangs, loops, duplicate notifications, and Telegram API flood limits.
 
 - **`class DeduplicationCache`**:
-  - `__init__(max_size: int = 5000, ttl_seconds: float = 3600.0)`: Initializes in-memory `OrderedDict` with an `asyncio.Lock`.
-  - `check_and_add(chat_id: int, message_id: int) -> bool`: Checks if `(chat_id, message_id)` was processed within TTL. Returns `True` if duplicate, `False` if newly registered. Evicts expired items when max size is reached.
+  - `__init__(max_size: int = 500, ttl_seconds: float = 3600.0)`: Initializes in-memory `OrderedDict` with an `asyncio.Lock`.
+  - `check_and_add(chat_id: int, message_id: int) -> bool`: Checks if `(chat_id, message_id)` was processed within TTL. Returns `True` if duplicate, `False` if newly registered. Evicts oldest expired items or oldest item when max size (500) is reached.
+  - `clean_expired() -> int`: Active memory sweep executed on watchdog cycles to proactively evict expired message IDs.
   - `size() -> int`: Returns current cached entry count.
 - **`class AlertRateLimiter`**:
   - `__init__(min_interval_seconds: float = 1.0)`: Enforces minimum elapsed time between consecutive alerts (default: 1.0 second).
@@ -124,13 +129,13 @@ Manages JSON persistence, hot-reloading, and unicode word-boundary regex compila
 
 ---
 
-### `dispatcher.py`
+### `src/dispatcher.py`
 Processes the alert queue at a controlled rate and formats notifications.
 
 - **`class AlertJob`** (Dataclass):
   - Attributes: `source_chat_id`, `source_chat_title`, `source_chat_username`, `message_id`, `message_date`, `message_text`, `match`.
 - **`class AlertDispatcher`**:
-  - `__init__(bot_client: TelegramClient, config: AppConfig)`: Initializes queue (`maxsize=1000`) and rate limiter.
+  - `__init__(bot_client: TelegramClient, config: AppConfig)`: Initializes bounded queue (`maxsize=config.queue_max_size`, default 100) and rate limiter.
   - `enqueue(job: AlertJob) -> bool`: Non-blocking queue enqueue; drops safely if queue is full.
   - `start() -> None`: Launches background worker `_process_queue_loop`.
   - `stop() -> None`: Gracefully cancels worker task.
@@ -144,7 +149,7 @@ Processes the alert queue at a controlled rate and formats notifications.
 
 ---
 
-### `parser.py`
+### `src/parser.py`
 User account listener capturing incoming and edited channel messages.
 
 - **`setup_parser_handlers(user_client, config, store, dedup, dispatcher) -> None`**:
@@ -158,7 +163,7 @@ User account listener capturing incoming and edited channel messages.
 
 ---
 
-### `bot_manager.py`
+### `src/bot_manager.py`
 Interactive command controller for users inside the target chat.
 
 - **`setup_bot_handlers(bot, config, store, dispatcher) -> None`**:
@@ -179,9 +184,12 @@ Interactive command controller for users inside the target chat.
 ### `main.py`
 Lifecycle manager and watchdog runner.
 
+- **`RotatingFileHandler`**: Logs to `airalert.log` with a 10MB file limit and 5 backup archives (50MB absolute disk ceiling).
 - **`class AirAlertService`**:
   - `start() -> None`: Loads storage, starts Bot client, launches dispatcher, starts User client, binds handlers, launches heartbeat task.
-  - `_heartbeat_loop() -> None`: Every 30 seconds checks `is_connected()` on both clients; auto-reconnects if disconnected. Logs telemetry report every 5 minutes.
+  - `_heartbeat_loop() -> None`:
+    - Every 30 seconds: checks connection and auto-reconnects; actively sweeps expired message IDs via `dedup.clean_expired()`.
+    - Every 5 minutes: runs `gc.collect()` to free transient MTProto buffers and logs deep health telemetry.
   - `stop() -> None`: Cancels heartbeat, stops dispatcher, disconnects clients cleanly.
   - `run_until_disconnected() -> None`: Listens for OS `SIGINT` and `SIGTERM` signals for graceful exit.
 - **`main() -> None`**: Entrypoint initializing `AirAlertService`.
