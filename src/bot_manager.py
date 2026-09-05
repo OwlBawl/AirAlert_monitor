@@ -17,37 +17,33 @@ from src.dispatcher import AlertDispatcher
 from src.safety import metrics, safe_api_call
 from src.storage import DynamicStore
 
-from telethon.tl.functions.bots import SetBotCommandsRequest
-from telethon.tl.types import (
-    BotCommand,
-    BotCommandScopeChatAdministrators,
-    BotCommandScopeDefault,
-)
-
 logger = logging.getLogger("AirAlert.BotManager")
 
 
 async def register_admin_bot_commands(bot: TelegramClient) -> None:
-    """Configure Telegram UI bot command scopes.
-    
-    - Default scope (all regular members): No commands suggested when typing '/'.
-    - Chat Administrators scope: Full list of management commands shown.
-    """
-    admin_commands = [
-        BotCommand(command="help", description="Довідка команд бота"),
-        BotCommand(command="add_key", description="Додати звичайне ключове слово"),
-        BotCommand(command="del_key", description="Видалити ключове слово"),
-        BotCommand(command="add_critical", description="Додати критичне слово (звук ON)"),
-        BotCommand(command="del_critical", description="Видалити критичне слово"),
-        BotCommand(command="list_keys", description="Список усіх активних слів"),
-        BotCommand(command="add_channel", description="Додати канал до моніторингу"),
-        BotCommand(command="del_channel", description="Видалити канал з моніторингу"),
-        BotCommand(command="list_channels", description="Список каналів моніторингу"),
-        BotCommand(command="status", description="Метрики системи та аптайм"),
-        BotCommand(command="id", description="Показати ID поточного чату"),
-    ]
-
+    """Configure Telegram UI bot command scopes if supported by installed Telethon version."""
     try:
+        from telethon.tl.functions.bots import SetBotCommandsRequest
+        from telethon.tl.types import (
+            BotCommand,
+            BotCommandScopeChatAdministrators,
+            BotCommandScopeDefault,
+        )
+
+        admin_commands = [
+            BotCommand(command="help", description="Довідка команд бота"),
+            BotCommand(command="add_key", description="Додати звичайне ключове слово"),
+            BotCommand(command="del_key", description="Видалити ключове слово"),
+            BotCommand(command="add_critical", description="Додати критичне слово (звук ON)"),
+            BotCommand(command="del_critical", description="Видалити критичне слово"),
+            BotCommand(command="list_keys", description="Список усіх активних слів"),
+            BotCommand(command="add_channel", description="Додати канал до моніторингу"),
+            BotCommand(command="del_channel", description="Видалити канал з моніторингу"),
+            BotCommand(command="list_channels", description="Список каналів моніторингу"),
+            BotCommand(command="status", description="Метрики системи та аптайм"),
+            BotCommand(command="id", description="Показати ID поточного чату"),
+        ]
+
         # Clear commands for regular users in groups/supergroups
         await bot(SetBotCommandsRequest(
             scope=BotCommandScopeDefault(),
@@ -62,7 +58,7 @@ async def register_admin_bot_commands(bot: TelegramClient) -> None:
         ))
         logger.info("Registered Telegram bot command scope: hidden from members, visible only to chat admins.")
     except Exception as exc:
-        logger.warning("Could not set bot command scope on Telegram servers: %s", exc)
+        logger.info("Bot command scope registration skipped or unsupported in this Telethon version: %s", exc)
 
 
 def setup_bot_handlers(
