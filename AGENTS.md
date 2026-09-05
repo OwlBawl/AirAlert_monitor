@@ -8,8 +8,9 @@ This repository contains an asynchronous Telegram channel monitoring service bui
   - `user_client` (`TelegramClient('user_session', api_id, api_hash)`): Runs in [src/parser.py](file:///Users/Andru/Downloads/AirAlert_monitor/src/parser.py) to listen to joined channels and groups.
   - `bot_client` (`TelegramClient('bot_session', api_id, api_hash)`): Runs in [src/bot_manager.py](file:///Users/Andru/Downloads/AirAlert_monitor/src/bot_manager.py) and [src/dispatcher.py](file:///Users/Andru/Downloads/AirAlert_monitor/src/dispatcher.py) to forward alerts and receive commands.
 - **Dynamic Data Files**:
-  - [data/keywords.json](file:///Users/Andru/Downloads/AirAlert_monitor/data/keywords.json): Tiered keywords (`critical` and `standard`).
-  - [data/channels.json](file:///Users/Andru/Downloads/AirAlert_monitor/data/channels.json): Monitored channel IDs / usernames.
+  - [config/keywords.json](file:///Users/Andru/Downloads/AirAlert_monitor/config/keywords.json): Tiered keywords (`critical` and `standard`).
+  - [config/channels.json](file:///Users/Andru/Downloads/AirAlert_monitor/config/channels.json): Monitored channel IDs / usernames.
+  - [config/.env](file:///Users/Andru/Downloads/AirAlert_monitor/config/.env): Runtime environment variables & API tokens.
 - **Safety Invariants**:
   - Always use `safe_api_call` in [src/safety.py](file:///Users/Andru/Downloads/AirAlert_monitor/src/safety.py) when executing Telegram API operations to enforce the 10-second timeout.
   - Dispatch rate limit is 1 alert per second ([src/safety.py:AlertRateLimiter](file:///Users/Andru/Downloads/AirAlert_monitor/src/safety.py)).
@@ -27,7 +28,7 @@ This repository contains an asynchronous Telegram channel monitoring service bui
 | [src/dispatcher.py](file:///Users/Andru/Downloads/AirAlert_monitor/src/dispatcher.py) | `AlertDispatcher` queue consumer, native forward, banner formatting |
 | [src/parser.py](file:///Users/Andru/Downloads/AirAlert_monitor/src/parser.py) | Message listener on `user_client` with deduplication & matching |
 | [src/bot_manager.py](file:///Users/Andru/Downloads/AirAlert_monitor/src/bot_manager.py) | Bot commands for chat members (`/add_key`, `/status`, etc.) |
-| [deploy/setup_vm.sh](file:///Users/Andru/Downloads/AirAlert_monitor/deploy/setup_vm.sh) | 1-click cloud VM setup script (virtualenv, dependencies, systemd) |
+| [setup.sh](file:///Users/Andru/Downloads/AirAlert_monitor/setup.sh) | 1-click cloud VM setup script (virtualenv, dependencies, systemd) |
 | [deploy/airalert.service](file:///Users/Andru/Downloads/AirAlert_monitor/deploy/airalert.service) | Systemd background service unit |
 | [tests/run_tests.py](file:///Users/Andru/Downloads/AirAlert_monitor/tests/run_tests.py) | Standard-library unittest test suite |
 

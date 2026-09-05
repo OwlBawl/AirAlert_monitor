@@ -56,20 +56,20 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Configure Credentials (`.env`)
+### 2. Configure Credentials (`config/.env`)
 
-Edit `.env` (already configured with your provided API credentials):
+Copy `config/.env.example` to `config/.env` or run `./setup.sh` to prompt interactively:
 ```env
-API_ID=22079200
-API_HASH=0726a4499610a5fee1c1e6c75cd29a66
-BOT_TOKEN=5648446763:AAFlWOqmUiSXBZCrRoWkyolzpQe9Nst-ylM
+API_ID=12345678
+API_HASH=your_api_hash_here
+BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
 TARGET_CHAT_ID=-100xxxxxxxxxx
 ```
 
 > **How to find your `TARGET_CHAT_ID`:**
-> 1. Add your bot `@...` to your destination channel or group.
+> 1. Add your bot to your destination channel or group.
 > 2. Send `/id` in that chat.
-> 3. Copy the chat ID returned by the bot and paste it into `.env`.
+> 3. Copy the chat ID returned by the bot and paste it into `config/.env`.
 
 ### 3. First-Time Run (Interactive Authentication)
 
@@ -77,7 +77,7 @@ TARGET_CHAT_ID=-100xxxxxxxxxx
 python3 main.py
 ```
 - Telethon will prompt in the terminal for your phone number and SMS login code for the **User Account**.
-- Once entered, Telethon saves the session file (`user_session.session`). Subsequent launches on the VM run 100% autonomously without prompts.
+- Once entered, Telethon saves the session file (`config/user_session.session`). Subsequent launches run 100% autonomously without prompts.
 
 ---
 
@@ -110,11 +110,16 @@ AirAlert_monitor/
 │   ├── dispatcher.py       # Queue consumer & forwarder
 │   ├── parser.py           # UserClient channel intake listener
 │   └── bot_manager.py      # Bot commands router (/add_key, etc.)
-├── data/                   # Dynamic JSON data files (gitignored locally)
-│   ├── keywords.json.example
-│   └── channels.json.example
-├── deploy/                 # Deployment scripts & systemd units
-│   ├── setup_vm.sh         # Automated 1-click VM setup script
+├── config/                 # Secrets, sessions & runtime data (gitignored)
+│   ├── .env.example        # Environment template (tracked)
+│   ├── keywords.json.example # Keywords template (tracked)
+│   ├── channels.json.example # Channels template (tracked)
+│   ├── .gitkeep            # Folder anchor (tracked)
+│   ├── .env                # Active credentials (gitignored)
+│   ├── keywords.json       # Active keywords (gitignored)
+│   ├── channels.json       # Active channels (gitignored)
+│   └── *.session           # Telegram sessions (gitignored)
+├── deploy/                 # Systemd units & service definitions
 │   └── airalert.service    # Systemd service definition
 ├── docs/                   # Internal architecture & design documents
 │   ├── PROJECT_STRUCTURE.md
@@ -123,9 +128,9 @@ AirAlert_monitor/
 ├── tests/                  # Unit and integration test suite
 │   ├── run_tests.py
 │   └── test_safety_and_matching.py
+├── setup.sh                # 1-click VM setup script at project root
 ├── main.py                 # Clean root service entrypoint
 ├── requirements.txt        # Dependencies
-├── .env.example            # Environment template
 ├── README.md               # User guide
 └── AGENTS.md               # AI & agent context specification
 ```
@@ -142,7 +147,7 @@ cd AirAlert_monitor
 ```
 2. Run the automated installer (automatically attaches to `/home/andru_bonus/telethon_env`):
 ```bash
-bash deploy/setup_vm.sh
+bash setup.sh
 ```
 3. Complete first-time phone authentication:
 ```bash

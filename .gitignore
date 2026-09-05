@@ -1,11 +1,20 @@
 # Environment and secrets
 .env
+config/.env
 *.session
 *.session-journal
+config/*.session
+config/*.session-journal
 
 # Runtime data files (dynamically managed locally by bot)
 data/keywords.json
 data/channels.json
+config/keywords.json
+config/channels.json
+
+# Always track example configs and gitkeeps
+!config/*.example
+!config/.gitkeep
 
 # Python bytecode & cache
 __pycache__/

@@ -15,7 +15,7 @@ A comprehensive developer and AI context guide detailing the architecture, modul
      ┌──────────────────────┐                ┌───────────┴──────────┐
      │  Telethon UserClient │                │  Telethon BotClient  │
      │   (user_session)     │                │    (bot_session)     │
-     └──────────┬───────────┘                └───────────▲──────────┘
+     └──────────┬───────────┘                └──────────▲──────────┘
                 │                                        │
                 ▼                                        │
        [ parser.py ]                                [ dispatcher.py ]
@@ -46,11 +46,16 @@ AirAlert_monitor/
 │   ├── dispatcher.py       # AlertDispatcher, AlertJob queue consumer
 │   ├── parser.py           # User client listener, filtering & intake
 │   └── bot_manager.py      # Bot client command router (/add_key, /status, etc.)
-├── data/                   # Dynamic JSON data files (gitignored, auto-created locally)
-│   ├── keywords.json.example
-│   └── channels.json.example
-├── deploy/                 # Deployment scripts & systemd units
-│   ├── setup_vm.sh         # 1-click cloud VM setup script (vm-bonus)
+├── config/                 # Unified configuration, secrets & sessions
+│   ├── .env.example        # Environment template (git tracked)
+│   ├── keywords.json.example # Vocabulary template (git tracked)
+│   ├── channels.json.example # Channels template (git tracked)
+│   ├── .gitkeep            # Directory placeholder (git tracked)
+│   ├── .env                # Runtime environment & secrets (gitignored)
+│   ├── keywords.json       # Live keywords storage (gitignored)
+│   ├── channels.json       # Live channels storage (gitignored)
+│   └── *.session           # Telethon SQLite session files (gitignored)
+├── deploy/                 # Systemd units & service definitions
 │   └── airalert.service    # Systemd service unit (andru_bonus)
 ├── docs/                   # Internal architecture & design documents
 │   ├── PROJECT_STRUCTURE.md
