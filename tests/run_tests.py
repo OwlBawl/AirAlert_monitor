@@ -13,8 +13,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.dispatcher import AlertDispatcher, AlertJob
 from src.safety import AlertRateLimiter, DeduplicationCache, safe_api_call
-from src.storage import DynamicStore
+from src.storage import DynamicStore, KeywordMatch
 
 
 class TestAirAlert(unittest.IsolatedAsyncioTestCase):
@@ -165,6 +166,45 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
 
             self.assertTrue(await store.remove_channel("@my_channel"))
             self.assertFalse(store.is_channel_monitored(999, "my_channel"))
+
+    def test_alert_formatting(self) -> None:
+        import datetime
+
+        # Standard tier test
+        std_job = AlertJob(
+            source_chat_id=-1001234567890,
+            source_chat_title="monitor",
+            source_chat_username="war_monitor",
+            message_id=43888,
+            message_date=datetime.datetime.now(datetime.timezone.utc),
+            message_text="🅿️ 2х мгКР Бандероль вектор Переяслав, далі Обухів.",
+            match=KeywordMatch(tier="standard", matched_words=["бандероль"]),
+        )
+        msg_text = AlertDispatcher.format_alert(std_job)
+        expected_std = (
+            "<blockquote>🅿️ 2х мгКР Бандероль вектор Переяслав, далі Обухів.</blockquote>\n"
+            "📢 monitor: бандероль\n"
+            "🔗 https://t.me/war_monitor/43888"
+        )
+        self.assertEqual(msg_text, expected_std)
+
+        # Critical tier test
+        crit_job = AlertJob(
+            source_chat_id=-1001234567890,
+            source_chat_title="monitor",
+            source_chat_username="war_monitor",
+            message_id=43889,
+            message_date=datetime.datetime.now(datetime.timezone.utc),
+            message_text="Пуск балістики на Київ!",
+            match=KeywordMatch(tier="critical", matched_words=["балістика"]),
+        )
+        msg_text_crit = AlertDispatcher.format_alert(crit_job)
+        expected_crit = (
+            "<blockquote>‼️🚨‼️ Пуск балістики на Київ!</blockquote>\n"
+            "📢 monitor: балістика\n"
+            "🔗 https://t.me/war_monitor/43889"
+        )
+        self.assertEqual(msg_text_crit, expected_crit)
 
 
 if __name__ == "__main__":

@@ -10,17 +10,20 @@ import sys
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from dotenv import load_dotenv
-
 # Base directory paths (points to project root)
 BASE_DIR = Path(__file__).resolve().parent.parent
 CONFIG_DIR = BASE_DIR / "config"
 ENV_FILE = CONFIG_DIR / ".env"
 
-if ENV_FILE.exists():
-    load_dotenv(dotenv_path=ENV_FILE)
-else:
-    load_dotenv()
+try:
+    from dotenv import load_dotenv
+
+    if ENV_FILE.exists():
+        load_dotenv(dotenv_path=ENV_FILE)
+    else:
+        load_dotenv()
+except ImportError:
+    pass
 
 
 def _get_env_int(key: str, default: int) -> int:

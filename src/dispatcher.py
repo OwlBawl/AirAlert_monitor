@@ -11,9 +11,10 @@ import datetime
 import html
 import logging
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING, Any, Optional
 
-from telethon import TelegramClient
+if TYPE_CHECKING:
+    from telethon import TelegramClient
 
 from src.config import AppConfig
 from src.safety import AlertRateLimiter, metrics, safe_api_call
@@ -156,33 +157,24 @@ class AlertDispatcher:
             finally:
                 self.queue.task_done()
 
-    async def _dispatch_single_alert(self, job: AlertJob) -> None:
-        """Forward original message and deliver accompanying banner."""
-        target_entity = await self.resolve_target_entity()
-        if not target_entity:
-            logger.warning("Target chat entity not resolved. Alert queued/dropped.")
-            return
-
+    @staticmethod
+    def format_alert(job: AlertJob) -> str:
+        """Format the 3-line alert message."""
         is_critical = job.match.tier == "critical"
-        disable_sound = not is_critical  # Sound ON for critical, silent for standard
 
-        # 1. Quoted message text at the top (without extra description)
+        # 1. Quoted message text at the top (with ‼️🚨‼️ prefix for critical alerts)
         clean_text = job.message_text.strip()
         if len(clean_text) > 3500:
             clean_text = clean_text[:3500] + "..."
-        quoted_text = f"<blockquote>{html.escape(clean_text)}</blockquote>"
+        crit_prefix = "‼️🚨‼️ " if is_critical else ""
+        quoted_text = f"<blockquote>{crit_prefix}{html.escape(clean_text)}</blockquote>"
 
-        # 2. Key indicator
+        # 2. Channel and matched key(s) line-by-line
         matched_str = ", ".join(job.match.matched_words)
-        if is_critical:
-            key_line = f"🚨 <b>Ключ:</b> {html.escape(matched_str)}"
-        else:
-            key_line = f"🎯 <b>Ключ:</b> {html.escape(matched_str)}"
+        channel_name = job.source_chat_title or (f"@{job.source_chat_username}" if job.source_chat_username else "Channel")
+        channel_key_line = f"📢 {html.escape(channel_name)}: {html.escape(matched_str)}"
 
-        # 3. Source channel name
-        source_line = f"📢 <b>Джерело:</b> {html.escape(job.source_chat_title)}"
-
-        # 4. Direct link to message
+        # 3. Direct link to message
         if job.source_chat_username:
             msg_link = f"https://t.me/{job.source_chat_username}/{job.message_id}"
         else:
@@ -190,21 +182,24 @@ class AlertDispatcher:
             msg_link = f"https://t.me/c/{clean_id}/{job.message_id}"
         link_line = f"🔗 {msg_link}"
 
-        # Clean compact alert card
-        alert_message = (
-            f"{quoted_text}\n\n"
-            f"{key_line}\n"
-            f"{source_line}\n"
-            f"{link_line}"
-        )
+        return f"{quoted_text}\n{channel_key_line}\n{link_line}"
 
-        # 5. Send the alert card with explicit sound flag
+    async def _dispatch_single_alert(self, job: AlertJob) -> None:
+        """Forward original message and deliver accompanying banner."""
+        target_entity = await self.resolve_target_entity()
+        if not target_entity:
+            logger.warning("Target chat entity not resolved. Alert queued/dropped.")
+            return
+
+        alert_message = self.format_alert(job)
+
+        # Send alert card with sound notifications enabled for all messages
         await safe_api_call(
             lambda: self.bot.send_message(
                 entity=target_entity,
                 message=alert_message,
                 parse_mode="html",
-                silent=disable_sound,
+                silent=False,
                 link_preview=False,
             ),
             timeout_seconds=self.config.api_timeout_seconds,
