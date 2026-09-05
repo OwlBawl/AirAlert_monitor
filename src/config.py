@@ -17,10 +17,6 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 CONFIG_DIR = BASE_DIR / "config"
 ENV_FILE = CONFIG_DIR / ".env"
 
-# Legacy fallback support if user still has .env at project root
-if not ENV_FILE.exists() and (BASE_DIR / ".env").exists():
-    ENV_FILE = BASE_DIR / ".env"
-
 if ENV_FILE.exists():
     load_dotenv(dotenv_path=ENV_FILE)
 else:
@@ -201,13 +197,6 @@ class AppConfig:
         # Dynamic JSON stores located inside config/
         keywords_file = CONFIG_DIR / "keywords.json"
         channels_file = CONFIG_DIR / "channels.json"
-
-        # Fallback to legacy data/ folder if files exist there and not yet in config/
-        legacy_data_dir = BASE_DIR / "data"
-        if not keywords_file.exists() and (legacy_data_dir / "keywords.json").exists():
-            keywords_file = legacy_data_dir / "keywords.json"
-        if not channels_file.exists() and (legacy_data_dir / "channels.json").exists():
-            channels_file = legacy_data_dir / "channels.json"
 
         alert_interval_seconds = _get_env_float("ALERT_INTERVAL_SECONDS", 1.0)
         api_timeout_seconds = _get_env_float("API_TIMEOUT_SECONDS", 10.0)

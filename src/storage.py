@@ -40,26 +40,51 @@ class DynamicStore:
         # In-memory monitored channels (stores int IDs and lowercased usernames)
         self._monitored_channels: Set[Union[int, str]] = set()
 
-        # Precompiled regex patterns
-        self._critical_regex: Optional[re.Pattern[str]] = None
-        self._standard_regex: Optional[re.Pattern[str]] = None
+        # Precompiled single-word regex patterns
+        self._critical_single_regex: Optional[re.Pattern[str]] = None
+        self._standard_single_regex: Optional[re.Pattern[str]] = None
 
-    def _build_regex(self, words: Set[str]) -> Optional[re.Pattern[str]]:
-        r"""Compile word-boundary regex supporting Cyrillic and Latin unicode characters.
+        # Precompiled multi-word AND criteria: list of (original_phrase, tuple of token regexes)
+        self._critical_multi_patterns: List[Tuple[str, Tuple[re.Pattern[str], ...]]] = []
+        self._standard_multi_patterns: List[Tuple[str, Tuple[re.Pattern[str], ...]]] = []
+
+    def _compile_tier_patterns(
+        self, words: Set[str]
+    ) -> Tuple[Optional[re.Pattern[str]], List[Tuple[str, Tuple[re.Pattern[str], ...]]]]:
+        r"""Separate single-word and multi-word keys.
         
-        Uses unicode lookbehind (?<!\w) and lookahead (?!\w) so that multi-word phrases
-        and Ukrainian/Cyrillic words match strictly as whole words without false triggers.
+        - Single-word keys use strict unicode word boundaries (?<!\w)word(?!\w).
+        - Multi-word keys (e.g. 'баліст київ') require all tokens/stems to match anywhere in the text.
         """
-        if not words:
-            return None
+        single_words: List[str] = []
+        multi_patterns: List[Tuple[str, Tuple[re.Pattern[str], ...]]] = []
 
-        # Sort longer phrases first to match compound phrases before single words
-        sorted_words = sorted((re.escape(w.strip()) for w in words if w.strip()), key=len, reverse=True)
-        if not sorted_words:
-            return None
+        for raw_phrase in words:
+            phrase = raw_phrase.strip()
+            if not phrase:
+                continue
+            tokens = phrase.split()
+            if len(tokens) == 1:
+                single_words.append(re.escape(tokens[0]))
+            else:
+                # Compile regex for each token in multi-word key.
+                # Use word-start boundary (?<!\w) allowing inflections/suffixes on stems
+                token_regexes = tuple(
+                    re.compile(r"(?<!\w)" + re.escape(t), flags=re.IGNORECASE | re.UNICODE)
+                    for t in tokens
+                    if t
+                )
+                if token_regexes:
+                    multi_patterns.append((phrase, token_regexes))
 
-        pattern = r"(?<!\w)(?:" + "|".join(sorted_words) + r")(?!\w)"
-        return re.compile(pattern, flags=re.IGNORECASE | re.UNICODE)
+        single_regex: Optional[re.Pattern[str]] = None
+        if single_words:
+            # Sort longer words first
+            sorted_words = sorted(single_words, key=len, reverse=True)
+            pattern = r"(?<!\w)(?:" + "|".join(sorted_words) + r")(?!\w)"
+            single_regex = re.compile(pattern, flags=re.IGNORECASE | re.UNICODE)
+
+        return single_regex, multi_patterns
 
     def _atomic_write_json(self, file_path: Path, data: Any) -> None:
         """Atomically persist JSON data via temporary file rename to prevent file corruption."""
@@ -98,8 +123,12 @@ class DynamicStore:
                 w.strip().lower() for w in data.get("standard", []) if isinstance(w, str) and w.strip()
             }
 
-            self._critical_regex = self._build_regex(self._critical_keywords)
-            self._standard_regex = self._build_regex(self._standard_keywords)
+            self._critical_single_regex, self._critical_multi_patterns = self._compile_tier_patterns(
+                self._critical_keywords
+            )
+            self._standard_single_regex, self._standard_multi_patterns = self._compile_tier_patterns(
+                self._standard_keywords
+            )
 
             logger.info(
                 "Loaded %d critical and %d standard keywords.",
@@ -158,8 +187,12 @@ class DynamicStore:
                 self._critical_keywords.discard(cleaned)
                 self._standard_keywords.add(cleaned)
 
-            self._critical_regex = self._build_regex(self._critical_keywords)
-            self._standard_regex = self._build_regex(self._standard_keywords)
+            self._critical_single_regex, self._critical_multi_patterns = self._compile_tier_patterns(
+                self._critical_keywords
+            )
+            self._standard_single_regex, self._standard_multi_patterns = self._compile_tier_patterns(
+                self._standard_keywords
+            )
 
             data = {
                 "critical": sorted(list(self._critical_keywords)),
@@ -184,8 +217,12 @@ class DynamicStore:
             self._critical_keywords.discard(cleaned)
             self._standard_keywords.discard(cleaned)
 
-            self._critical_regex = self._build_regex(self._critical_keywords)
-            self._standard_regex = self._build_regex(self._standard_keywords)
+            self._critical_single_regex, self._critical_multi_patterns = self._compile_tier_patterns(
+                self._critical_keywords
+            )
+            self._standard_single_regex, self._standard_multi_patterns = self._compile_tier_patterns(
+                self._standard_keywords
+            )
 
             data = {
                 "critical": sorted(list(self._critical_keywords)),
@@ -275,21 +312,32 @@ class DynamicStore:
         return False
 
     def match_text(self, text: Optional[str]) -> Optional[KeywordMatch]:
-        """Evaluate text against compiled regexes, prioritizing critical tier."""
+        """Evaluate text against compiled regexes and multi-word patterns, prioritizing critical tier."""
         if not text:
             return None
 
-        # Check critical tier first
-        if self._critical_regex is not None:
-            matches = self._critical_regex.findall(text)
+        # 1. Check CRITICAL tier first
+        # 1a. Critical multi-word patterns (all words/stems must be present in text)
+        for phrase, token_regexes in self._critical_multi_patterns:
+            if all(rx.search(text) for rx in token_regexes):
+                return KeywordMatch(tier="critical", matched_words=(phrase,))
+
+        # 1b. Critical single-word regex
+        if self._critical_single_regex is not None:
+            matches = self._critical_single_regex.findall(text)
             if matches:
-                # Deduplicate matched words preserving lowercased uniqueness
                 unique_matches = tuple(dict.fromkeys(m.lower() for m in matches))
                 return KeywordMatch(tier="critical", matched_words=unique_matches)
 
-        # Check standard tier
-        if self._standard_regex is not None:
-            matches = self._standard_regex.findall(text)
+        # 2. Check STANDARD tier
+        # 2a. Standard multi-word patterns (all words/stems must be present in text)
+        for phrase, token_regexes in self._standard_multi_patterns:
+            if all(rx.search(text) for rx in token_regexes):
+                return KeywordMatch(tier="standard", matched_words=(phrase,))
+
+        # 2b. Standard single-word regex
+        if self._standard_single_regex is not None:
+            matches = self._standard_single_regex.findall(text)
             if matches:
                 unique_matches = tuple(dict.fromkeys(m.lower() for m in matches))
                 return KeywordMatch(tier="standard", matched_words=unique_matches)

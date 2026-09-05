@@ -41,10 +41,7 @@ echo "[2/5] Verifying and installing dependencies in $VENV_DIR..."
 
 # 3. Check for config/.env file
 if [ ! -f "$CONFIG_DIR/.env" ]; then
-    if [ -f "$PROJECT_ROOT/.env" ]; then
-        echo "[3/5] Migrating existing root .env to config/.env..."
-        mv "$PROJECT_ROOT/.env" "$CONFIG_DIR/.env"
-    elif [ -f "$CONFIG_DIR/.env.example" ]; then
+    if [ -f "$CONFIG_DIR/.env.example" ]; then
         echo "[3/5] Initializing config/.env from config/.env.example..."
         cp "$CONFIG_DIR/.env.example" "$CONFIG_DIR/.env"
     fi
@@ -52,14 +49,13 @@ else
     echo "[3/5] Existing config/.env file found."
 fi
 
-# 4. Detect and reuse existing User session from home directory
-echo "[4/5] Checking for existing Telethon user session in home directory..."
-if [ -f "$HOME/parse_messages.session" ] && [ ! -f "$CONFIG_DIR/user_session.session" ]; then
-    echo "Found existing $HOME/parse_messages.session -> Copying to config/user_session.session"
+# 4. Check for user session in config/ directory
+echo "[4/5] Checking for Telethon user session in $CONFIG_DIR..."
+if [ -f "$CONFIG_DIR/user_session.session" ]; then
+    echo "Existing user_session.session found."
+elif [ -f "$HOME/parse_messages.session" ]; then
+    echo "Found $HOME/parse_messages.session -> Copying to $CONFIG_DIR/user_session.session"
     cp "$HOME/parse_messages.session" "$CONFIG_DIR/user_session.session"
-elif [ -f "$PROJECT_ROOT/user_session.session" ] && [ ! -f "$CONFIG_DIR/user_session.session" ]; then
-    echo "Migrating legacy $PROJECT_ROOT/user_session.session -> config/user_session.session"
-    mv "$PROJECT_ROOT/user_session.session" "$CONFIG_DIR/user_session.session"
 fi
 
 # 5. Run tests to confirm integrity

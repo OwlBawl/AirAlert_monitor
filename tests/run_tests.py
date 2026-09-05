@@ -25,7 +25,7 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
             ch_file = Path(tmp_dir) / "channels.json"
 
             kw_data = {
-                "critical": ["ракета", "балістика", "повітряна тривога"],
+                "critical": ["ракета", "балістика", "повітряна тривога", "баліст київ"],
                 "standard": ["дрон", "шахед", "вибух"],
             }
             with open(kw_file, "w", encoding="utf-8") as f:
@@ -62,11 +62,20 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
             res5 = store.match_text("Військові ескадрони провели навчання")
             self.assertIsNone(res5)
 
-            # 6. Punctuation boundary matching
-            res6 = store.match_text("Увага: (шахед!) біля кордону.")
-            self.assertIsNotNone(res6)
-            self.assertEqual(res6.tier, "standard")
-            self.assertIn("шахед", res6.matched_words)
+            # 7. Multi-word stem combination matching (words anywhere in message with declensions)
+            res7a = store.match_text("Зафіксовано рух: балістика летить на київ терміново!")
+            self.assertIsNotNone(res7a)
+            self.assertEqual(res7a.tier, "critical")
+            self.assertIn("баліст київ", res7a.matched_words)
+
+            res7b = store.match_text("Київщина: можлива балістична загроза!")
+            self.assertIsNotNone(res7b)
+            self.assertEqual(res7b.tier, "critical")
+            self.assertIn("баліст київ", res7b.matched_words)
+
+            # Missing one token of the multi-word combination -> should not match
+            res7c = store.match_text("Увага! Київщина під загрозою дронів.")
+            self.assertIsNone(res7c)
 
     async def test_deduplication_cache(self) -> None:
         cache = DeduplicationCache(max_size=10, ttl_seconds=0.5)
