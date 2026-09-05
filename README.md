@@ -171,6 +171,28 @@ tail -f airalert.log
 
 ---
 
+## Updating Existing VM Installation
+
+Whenever new code or updates are pushed to GitHub, run these commands on `vm-bonus` to update:
+
+```bash
+cd /home/andru_bonus/AirAlert_monitor
+
+# 1. Pull latest code
+git pull origin main
+
+# 2. Run setup script (updates dependencies & verifies environment)
+bash setup.sh
+
+# 3. Restart background service
+sudo systemctl restart airalert.service
+
+# 4. Confirm it's running healthy
+sudo systemctl status airalert.service
+```
+
+> **Note:** Your active secrets (`config/.env`), Telegram sessions (`config/*.session`), and dynamic databases (`config/keywords.json`, `config/channels.json`) will never be modified or overwritten by `git pull`.
+
 ## Running Tests
 
 Run the test suite to verify regex matching, rate-limiting, deduplication, and timeout escapes:
