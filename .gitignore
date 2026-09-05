@@ -7,8 +7,6 @@ config/*.session
 config/*.session-journal
 
 # Runtime data files (dynamically managed locally by bot)
-data/keywords.json
-data/channels.json
 config/keywords.json
 config/channels.json
 
