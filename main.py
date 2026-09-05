@@ -16,7 +16,7 @@ from typing import Optional
 
 from telethon import TelegramClient
 
-from src.bot_manager import setup_bot_handlers
+from src.bot_manager import register_admin_bot_commands, setup_bot_handlers
 from src.config import config
 from src.dispatcher import AlertDispatcher
 from src.parser import setup_parser_handlers
@@ -132,6 +132,9 @@ class AirAlertService:
         await self.bot_client.start(bot_token=self.config.bot_token)
         bot_me = await self.bot_client.get_me()
         logger.info("Bot Client connected successfully as @%s (id=%s)", bot_me.username, bot_me.id)
+
+        # Configure command menu visibility (hidden from members, visible only to admins)
+        await register_admin_bot_commands(self.bot_client)
 
         # Pre-load bot dialogs so Telethon caches group entity access hashes
         try:
