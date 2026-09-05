@@ -63,6 +63,7 @@ class DynamicStore:
 
     def _atomic_write_json(self, file_path: Path, data: Any) -> None:
         """Atomically persist JSON data via temporary file rename to prevent file corruption."""
+        file_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = file_path.with_suffix(".tmp")
         try:
             with open(tmp_path, "w", encoding="utf-8") as f:

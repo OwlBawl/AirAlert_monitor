@@ -110,9 +110,9 @@ AirAlert_monitor/
 │   ├── dispatcher.py       # Queue consumer & forwarder
 │   ├── parser.py           # UserClient channel intake listener
 │   └── bot_manager.py      # Bot commands router (/add_key, etc.)
-├── data/                   # Dynamic JSON data files
-│   ├── keywords.json       # Tiered keywords (standard & critical)
-│   └── channels.json       # Monitored channel IDs / usernames
+├── data/                   # Dynamic JSON data files (gitignored locally)
+│   ├── keywords.json.example
+│   └── channels.json.example
 ├── deploy/                 # Deployment scripts & systemd units
 │   ├── setup_vm.sh         # Automated 1-click VM setup script
 │   └── airalert.service    # Systemd service definition

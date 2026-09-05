@@ -3,6 +3,10 @@
 *.session
 *.session-journal
 
+# Runtime data files (dynamically created/managed locally by bot)
+data/*.json
+!data/*.example
+
 # Python bytecode & cache
 __pycache__/
 *.py[cod]

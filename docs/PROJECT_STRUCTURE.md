@@ -46,9 +46,9 @@ AirAlert_monitor/
 │   ├── dispatcher.py       # AlertDispatcher, AlertJob queue consumer
 │   ├── parser.py           # User client listener, filtering & intake
 │   └── bot_manager.py      # Bot client command router (/add_key, /status, etc.)
-├── data/                   # Dynamic JSON data files
-│   ├── keywords.json       # Dynamic JSON: critical & standard keywords
-│   └── channels.json       # Dynamic JSON: monitored channels/groups
+├── data/                   # Dynamic JSON data files (gitignored, auto-created locally)
+│   ├── keywords.json.example
+│   └── channels.json.example
 ├── deploy/                 # Deployment scripts & systemd units
 │   ├── setup_vm.sh         # 1-click cloud VM setup script (vm-bonus)
 │   └── airalert.service    # Systemd service unit (andru_bonus)
