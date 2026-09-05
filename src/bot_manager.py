@@ -24,10 +24,14 @@ async def register_admin_bot_commands(bot: TelegramClient) -> None:
     """Configure Telegram UI bot command scopes if supported by installed Telethon version."""
     try:
         from telethon.tl.functions.bots import SetBotCommandsRequest
-        from telethon.tl.types import (
-            BotCommand,
-            BotCommandScopeChatAdministrators,
-            BotCommandScopeDefault,
+        from telethon.tl.types import BotCommand, BotCommandScopeDefault
+        from telethon.tl import types
+
+        # Resolve exact admin scope class across Telethon schema versions
+        scope_admin_cls = getattr(
+            types,
+            "BotCommandScopeChatsAdmins",
+            getattr(types, "BotCommandScopeChatAdministrators", None),
         )
 
         admin_commands = [
@@ -44,21 +48,25 @@ async def register_admin_bot_commands(bot: TelegramClient) -> None:
             BotCommand(command="id", description="Показати ID поточного чату"),
         ]
 
-        # Clear commands for regular users in groups/supergroups
+        # 1. Clear suggestions for regular members in groups
         await bot(SetBotCommandsRequest(
             scope=BotCommandScopeDefault(),
             lang_code="",
             commands=[],
         ))
-        # Expose commands strictly to chat administrators
-        await bot(SetBotCommandsRequest(
-            scope=BotCommandScopeChatAdministrators(),
-            lang_code="",
-            commands=admin_commands,
-        ))
-        logger.info("Registered Telegram bot command scope: hidden from members, visible only to chat admins.")
+
+        # 2. Expose suggestions strictly to chat administrators
+        if scope_admin_cls is not None:
+            await bot(SetBotCommandsRequest(
+                scope=scope_admin_cls(),
+                lang_code="",
+                commands=admin_commands,
+            ))
+            logger.info("Registered Telegram bot command scope: hidden from members, visible only to chat admins.")
+        else:
+            logger.info("Admin command scope class not found in Telethon types; commands protected at runtime.")
     except Exception as exc:
-        logger.info("Bot command scope registration skipped or unsupported in this Telethon version: %s", exc)
+        logger.warning("Could not set bot command scope on Telegram servers: %s", exc)
 
 
 def setup_bot_handlers(
