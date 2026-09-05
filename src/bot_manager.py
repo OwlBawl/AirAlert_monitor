@@ -27,11 +27,11 @@ async def register_admin_bot_commands(bot: TelegramClient) -> None:
         from telethon.tl.types import BotCommand, BotCommandScopeDefault
         from telethon.tl import types
 
-        # Resolve exact admin scope class across Telethon schema versions
+        # Resolve exact admin scope class in Telethon
         scope_admin_cls = getattr(
             types,
-            "BotCommandScopeChatsAdmins",
-            getattr(types, "BotCommandScopeChatAdministrators", None),
+            "BotCommandScopeChatAdmins",
+            getattr(types, "BotCommandScopeChatsAdmins", None),
         )
 
         admin_commands = [
