@@ -88,15 +88,16 @@ class AlertDispatcher:
             except Exception:
                 pass
 
-        # 3. Refresh bot dialogs to sync entity cache from Telegram
-        try:
-            dialogs = await self.bot.get_dialogs()
-            for d in dialogs:
-                if d.id == target_id or (alt_id and d.id == alt_id):
-                    self._target_entity = d.entity
-                    return self._target_entity
-        except Exception:
-            pass
+        # 3. Query user client dialogs if available to discover entity
+        if self.user_client:
+            try:
+                dialogs = await self.user_client.get_dialogs()
+                for d in dialogs:
+                    if d.id == target_id or (alt_id and d.id == alt_id):
+                        self._target_entity = d.entity
+                        return self._target_entity
+            except Exception:
+                pass
 
         logger.warning(
             "Could not resolve target chat %d. Ensure @%s is added to the group and has sent/received a message.",

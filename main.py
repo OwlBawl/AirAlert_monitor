@@ -136,12 +136,13 @@ class AirAlertService:
         # Configure command menu visibility (hidden from members, visible only to admins)
         await register_admin_bot_commands(self.bot_client)
 
-        # Pre-load bot dialogs so Telethon caches group entity access hashes
-        try:
-            bot_dialogs = await self.bot_client.get_dialogs()
-            logger.info("Bot loaded %d active dialogs from Telegram server.", len(bot_dialogs))
-        except Exception as exc:
-            logger.warning("Could not pre-load bot dialogs: %s", exc)
+        # Pre-cache target chat entity so Telethon has the access hash
+        if self.config.target_chat_id:
+            try:
+                await self.bot_client.get_entity(self.config.target_chat_id)
+                logger.info("Bot pre-cached target chat entity %d", self.config.target_chat_id)
+            except Exception as exc:
+                logger.debug("Target chat entity pre-cache deferred: %s", exc)
 
         # 3. Attach Bot command handlers
         # (Dispatcher initialized after User Client so forwards use subscribed user session)
