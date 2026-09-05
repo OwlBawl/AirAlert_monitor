@@ -3,9 +3,9 @@
 *.session
 *.session-journal
 
-# Runtime data files (dynamically created/managed locally by bot)
-data/*.json
-!data/*.example
+# Runtime data files (dynamically managed locally by bot)
+data/keywords.json
+data/channels.json
 
 # Python bytecode & cache
 __pycache__/
