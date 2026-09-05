@@ -48,9 +48,37 @@ def setup_bot_handlers(
 
         return is_auth
 
+    async def is_sender_admin(event: events.NewMessage.Event) -> bool:
+        """Check if sender is an admin or creator in group/channel, or sender in private DM."""
+        if not is_authorized_chat(event):
+            return False
+
+        # Private chat with bot is always admin-controlled by the user
+        if event.is_private:
+            return True
+
+        # In groups/supergroups, query sender permissions
+        try:
+            sender_id = event.sender_id
+            if not sender_id:
+                return False
+
+            perms = await bot.get_permissions(event.chat_id, sender_id)
+            if perms and (perms.is_admin or perms.is_creator):
+                return True
+        except Exception as exc:
+            logger.warning("Could not check permissions for user %s: %s", event.sender_id, exc)
+
+        await safe_api_call(
+            lambda: event.reply("⛔️ Ця команда доступна лише адміністраторам чату.", parse_mode="html"),
+            timeout_seconds=config.api_timeout_seconds,
+            action_name="Admin Denied Reply",
+        )
+        return False
+
     @bot.on(events.NewMessage(pattern=r"^/(?:start|help)(?:@\w+)?$"))
     async def handle_help(event: events.NewMessage.Event) -> None:
-        if not is_authorized_chat(event):
+        if not await is_sender_admin(event):
             return
 
         help_text = (
@@ -77,6 +105,8 @@ def setup_bot_handlers(
 
     @bot.on(events.NewMessage(pattern=r"^/id(?:@\w+)?$"))
     async def handle_id(event: events.NewMessage.Event) -> None:
+        if not is_authorized_chat(event):
+            return
         text = f"ℹ️ <b>Chat ID:</b> <code>{event.chat_id}</code>"
         await safe_api_call(
             lambda: event.reply(text, parse_mode="html"),
@@ -86,7 +116,7 @@ def setup_bot_handlers(
 
     @bot.on(events.NewMessage(pattern=r"^/add_key(?:@\w+)?(?:\s+(.+)|$)"))
     async def handle_add_key(event: events.NewMessage.Event) -> None:
-        if not is_authorized_chat(event):
+        if not await is_sender_admin(event):
             return
 
         arg = event.pattern_match.group(1)
@@ -103,7 +133,7 @@ def setup_bot_handlers(
 
     @bot.on(events.NewMessage(pattern=r"^/add_critical(?:@\w+)?(?:\s+(.+)|$)"))
     async def handle_add_critical(event: events.NewMessage.Event) -> None:
-        if not is_authorized_chat(event):
+        if not await is_sender_admin(event):
             return
 
         arg = event.pattern_match.group(1)
@@ -120,7 +150,7 @@ def setup_bot_handlers(
 
     @bot.on(events.NewMessage(pattern=r"^/(?:del_key|del_critical)(?:@\w+)?(?:\s+(.+)|$)"))
     async def handle_del_key(event: events.NewMessage.Event) -> None:
-        if not is_authorized_chat(event):
+        if not await is_sender_admin(event):
             return
 
         arg = event.pattern_match.group(1)
@@ -137,7 +167,7 @@ def setup_bot_handlers(
 
     @bot.on(events.NewMessage(pattern=r"^/list_keys(?:@\w+)?$"))
     async def handle_list_keys(event: events.NewMessage.Event) -> None:
-        if not is_authorized_chat(event):
+        if not await is_sender_admin(event):
             return
 
         keys = await store.get_keywords()
@@ -157,7 +187,7 @@ def setup_bot_handlers(
 
     @bot.on(events.NewMessage(pattern=r"^/add_channel(?:@\w+)?(?:\s+(.+)|$)"))
     async def handle_add_channel(event: events.NewMessage.Event) -> None:
-        if not is_authorized_chat(event):
+        if not await is_sender_admin(event):
             return
 
         arg = event.pattern_match.group(1)
@@ -174,7 +204,7 @@ def setup_bot_handlers(
 
     @bot.on(events.NewMessage(pattern=r"^/del_channel(?:@\w+)?(?:\s+(.+)|$)"))
     async def handle_del_channel(event: events.NewMessage.Event) -> None:
-        if not is_authorized_chat(event):
+        if not await is_sender_admin(event):
             return
 
         arg = event.pattern_match.group(1)
@@ -191,7 +221,7 @@ def setup_bot_handlers(
 
     @bot.on(events.NewMessage(pattern=r"^/list_channels(?:@\w+)?$"))
     async def handle_list_channels(event: events.NewMessage.Event) -> None:
-        if not is_authorized_chat(event):
+        if not await is_sender_admin(event):
             return
 
         channels = await store.get_channels()
@@ -209,7 +239,7 @@ def setup_bot_handlers(
 
     @bot.on(events.NewMessage(pattern=r"^/status(?:@\w+)?$"))
     async def handle_status(event: events.NewMessage.Event) -> None:
-        if not is_authorized_chat(event):
+        if not await is_sender_admin(event):
             return
 
         keys = await store.get_keywords()
