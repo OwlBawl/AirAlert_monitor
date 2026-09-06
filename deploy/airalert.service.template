@@ -5,11 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=andru_bonus
-# Path to project directory on target VM
-WorkingDirectory=/home/andru_bonus/AirAlert_monitor
-# Path to python in dedicated telethon_env virtualenv
-ExecStart=/home/andru_bonus/telethon_env/bin/python main.py
+User={{USER}}
+WorkingDirectory={{WORKDIR}}
+ExecStart={{PYTHON_BIN}} main.py
 Restart=always
 RestartSec=10
 KillMode=mixed
