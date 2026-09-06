@@ -20,8 +20,8 @@ A comprehensive developer and AI context guide detailing the architecture, modul
                 ▼                                        │
        [ parser.py ]                                [ dispatcher.py ]
        • loop guard                                 • 1 msg/sec pacing
-       • dedup check                                • native forward
-       • channel filter                             • critical banner
+       • dedup check                                • 3-line alert card
+       • channel filter                             • critical prefix
                 │                                        ▲
                 ▼                                        │
        [ storage.py ]                                    │
@@ -145,12 +145,13 @@ Processes the alert queue at a controlled rate and formats notifications.
   - `start() -> None`: Launches background worker `_process_queue_loop`.
   - `stop() -> None`: Gracefully cancels worker task.
   - `_process_queue_loop() -> None`: Infinite async loop consuming jobs with `rate_limiter.wait_turn()`.
+  - `format_alert(job: AlertJob) -> str`:
+    Formats structured 3-line HTML alert card:
+    1. Quoted text block: `<blockquote>` with original message text (prefixed with `‼️🚨‼️ ` for Critical tier).
+    2. Metadata line: `📢 {channel_name}: {matched_words}`.
+    3. Direct message link: `🔗 https://t.me/.../{message_id}`.
   - `_dispatch_single_alert(job: AlertJob) -> None`:
-    1. Executes native forward: `bot.forward_messages(entity=target_chat, messages=job.message_id, from_peer=job.source_chat_id, silent=disable_sound)`.
-    2. Formats high-visibility banner:
-       - Critical: 🚨🚨🚨 **КРИТИЧНА ТРИВОГА / CRITICAL ALERT** 🚨🚨🚨 with sound ON (`silent=False`).
-       - Standard: ⚠️ **СПОВІЩЕННЯ / KEYWORD ALERT** ⚠️ with sound OFF (`silent=True`).
-    3. Sends banner message via `safe_api_call`.
+    Resolves target entity and dispatches the alert card via `safe_api_call` with sound enabled (`silent=False`).
 
 ---
 

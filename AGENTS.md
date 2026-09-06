@@ -25,11 +25,11 @@ This repository contains an asynchronous Telegram channel monitoring service bui
 | [src/config.py](src/config.py) | Environment variables & `AppConfig` schema |
 | [src/storage.py](src/storage.py) | `DynamicStore` with atomic JSON updates and regex compilation |
 | [src/safety.py](src/safety.py) | `DeduplicationCache`, `AlertRateLimiter`, `safe_api_call`, metrics |
-| [src/dispatcher.py](src/dispatcher.py) | `AlertDispatcher` queue consumer, native forward, banner formatting |
+| [src/dispatcher.py](src/dispatcher.py) | `AlertDispatcher` queue consumer, alert card formatting & dispatch |
 | [src/parser.py](src/parser.py) | Message listener on `user_client` with deduplication & matching |
 | [src/bot_manager.py](src/bot_manager.py) | Bot commands for chat members (`/add_key`, `/status`, etc.) |
 | [setup.sh](setup.sh) | 1-click cloud VM setup script (virtualenv, dependencies, systemd) |
-| [deploy/airalert.service](deploy/airalert.service) | Systemd background service unit |
+| [deploy/airalert.service.template](deploy/airalert.service.template) | Systemd background service unit template |
 | [tests/run_tests.py](tests/run_tests.py) | Standard-library unittest test suite |
 
 ## Running Tests
