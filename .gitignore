@@ -31,3 +31,8 @@ env/
 # OS artifacts
 .DS_Store
 Thumbs.db
+
+# Generated deployment units
+deploy/airalert.service
+!deploy/airalert.service.template
+

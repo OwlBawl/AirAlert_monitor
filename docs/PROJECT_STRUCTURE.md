@@ -56,7 +56,7 @@ AirAlert_monitor/
 │   ├── channels.json       # Live channels storage (gitignored)
 │   └── *.session           # Telethon SQLite session files (gitignored)
 ├── deploy/                 # Systemd units & service definitions
-│   └── airalert.service    # Systemd service unit (andru_bonus)
+│   └── airalert.service.template # Systemd service unit template
 ├── docs/                   # Internal architecture & design documents
 │   ├── PROJECT_STRUCTURE.md
 │   ├── IMPLEMENTATION_PLAN.md
