@@ -57,6 +57,9 @@ bash setup.sh --dry-run
 
 # 3. Run interactive setup wizard
 bash setup.sh
+
+# 4. Verify service status (optional)
+sudo systemctl status airalert.service
 ```
 
 <details>
@@ -191,6 +194,9 @@ bash setup.sh
 
 # 4. Restart background service
 sudo systemctl restart airalert.service
+
+# 5. Verify service status (optional)
+sudo systemctl status airalert.service
 ```
 
 > **Note:** Active runtime data (`config/.env`, `config/*.session`, `config/keywords.json`, `config/channels.json`) are ignored by git and will not be overwritten.
