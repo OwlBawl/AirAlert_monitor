@@ -53,7 +53,7 @@ class DynamicStore:
     ) -> Tuple[Optional[re.Pattern[str]], List[Tuple[str, Tuple[re.Pattern[str], ...]]]]:
         r"""Separate single-word and multi-word keys.
         
-        - Single-word keys use strict unicode word boundaries (?<!\w)word(?!\w).
+        - Single-word keys use word-start boundary only (?<!\w)word — allowing suffix inflections.
         - Multi-word keys (e.g. 'баліст київ') require all tokens/stems to match anywhere in the text.
         """
         single_words: List[str] = []
@@ -81,7 +81,9 @@ class DynamicStore:
         if single_words:
             # Sort longer words first
             sorted_words = sorted(single_words, key=len, reverse=True)
-            pattern = r"(?<!\w)(?:" + "|".join(sorted_words) + r")(?!\w)"
+            # Word-start boundary only: stems like "бандерол" match inflected forms
+            # ("Бандероль", "Бандеролі") — no right boundary (?!\w) restriction
+            pattern = r"(?<!\w)(?:" + "|".join(sorted_words) + r")"
             single_regex = re.compile(pattern, flags=re.IGNORECASE | re.UNICODE)
 
         return single_regex, multi_patterns

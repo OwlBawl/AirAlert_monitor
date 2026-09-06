@@ -75,7 +75,8 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
             self.assertIn("баліст київ", res7b.matched_words)
 
             # Missing one token of the multi-word combination -> should not match
-            res7c = store.match_text("Увага! Київщина під загрозою дронів.")
+            # (avoid text containing other keyword stems like "дрон" in "дронів")
+            res7c = store.match_text("Увага! Київщина під загрозою атаки.")
             self.assertIsNone(res7c)
 
     async def test_deduplication_cache(self) -> None:
