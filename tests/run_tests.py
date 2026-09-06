@@ -201,7 +201,8 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
         )
         msg_text_crit = AlertDispatcher.format_alert(crit_job)
         expected_crit = (
-            "<blockquote>‼️🚨‼️ Пуск балістики на Київ!</blockquote>\n"
+            "‼️🚨‼️\n"
+            "<blockquote>Пуск балістики на Київ!</blockquote>\n"
             "📢 monitor: балістика\n"
             "🔗 https://t.me/war_monitor/43889"
         )

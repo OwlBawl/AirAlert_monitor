@@ -160,22 +160,24 @@ class AlertDispatcher:
 
     @staticmethod
     def format_alert(job: AlertJob) -> str:
-        """Format the 3-line alert message."""
+        """Format the alert message with optional critical banner above the quote."""
         is_critical = job.match.tier == "critical"
 
-        # 1. Quoted message text at the top (with ‼️🚨‼️ prefix for critical alerts)
+        # 1. Critical banner — standalone line above the quote
+        crit_banner = "‼️🚨‼️\n" if is_critical else ""
+
+        # 2. Quoted original message text
         clean_text = job.message_text.strip()
         if len(clean_text) > 3500:
             clean_text = clean_text[:3500] + "..."
-        crit_prefix = "‼️🚨‼️ " if is_critical else ""
-        quoted_text = f"<blockquote>{crit_prefix}{html.escape(clean_text)}</blockquote>"
+        quoted_text = f"<blockquote>{html.escape(clean_text)}</blockquote>"
 
-        # 2. Channel and matched key(s) line-by-line
+        # 3. Channel and matched key(s)
         matched_str = ", ".join(job.match.matched_words)
         channel_name = job.source_chat_title or (f"@{job.source_chat_username}" if job.source_chat_username else "Channel")
         channel_key_line = f"📢 {html.escape(channel_name)}: {html.escape(matched_str)}"
 
-        # 3. Direct link to message
+        # 4. Direct link to message
         if job.source_chat_username:
             msg_link = f"https://t.me/{job.source_chat_username}/{job.message_id}"
         else:
@@ -183,7 +185,7 @@ class AlertDispatcher:
             msg_link = f"https://t.me/c/{clean_id}/{job.message_id}"
         link_line = f"🔗 {msg_link}"
 
-        return f"{quoted_text}\n{channel_key_line}\n{link_line}"
+        return f"{crit_banner}{quoted_text}\n{channel_key_line}\n{link_line}"
 
     async def _dispatch_single_alert(self, job: AlertJob) -> None:
         """Forward original message and deliver accompanying banner."""
@@ -209,9 +211,8 @@ class AlertDispatcher:
 
         metrics.alerts_forwarded += 1
         logger.info(
-            "Alert dispatched successfully: tier=%s, chat=%s, msg_id=%s, critical=%s",
+            "Alert dispatched successfully: tier=%s, chat=%s, msg_id=%s",
             job.match.tier,
             job.source_chat_id,
             job.message_id,
-            is_critical,
         )
