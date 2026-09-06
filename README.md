@@ -48,18 +48,12 @@ Production-grade, dual-client Telegram monitoring system built with Telethon. Li
 The automated setup script handles the entire lifecycle: resolves or creates the virtual environment, installs dependencies, guides you through setting up credentials via an interactive wizard, offers immediate User Account phone login, executes verification tests, and generates the tailored `deploy/airalert.service` unit:
 
 ```bash
-# 1. Clone repository
-git clone https://github.com/OwlBawl/AirAlert_monitor.git
-cd AirAlert_monitor
-
-# 2. Preview setup and environment detection (optional dry-run)
-bash setup.sh --dry-run
-
-# 3. Run interactive setup wizard
-bash setup.sh
-
-# 4. Verify service status (optional)
-sudo systemctl status airalert.service
+# Clone repository and run interactive setup (aborts if any step fails):
+git clone https://github.com/OwlBawl/AirAlert_monitor.git && \
+cd AirAlert_monitor && \
+bash setup.sh --dry-run && \         # 1. Preview environment detection (optional)
+bash setup.sh && \                   # 2. Interactive setup wizard
+sudo systemctl status airalert.service  # 3. Verify service status (optional)
 ```
 
 <details>
@@ -181,21 +175,12 @@ Any member inside the destination alert chat can manage the monitoring rules in 
 To pull updates and restart the service on your server:
 
 ```bash
-cd ~/AirAlert_monitor
-
-# 1. Pull latest code
-git pull origin main
-
-# 2. Preview environment and changes (optional dry-run)
-bash setup.sh --dry-run
-
-# 3. Run setup script (updates dependencies, executes tests, regenerates service)
-bash setup.sh
-
-# 4. Restart background service
-sudo systemctl restart airalert.service
-
-# 5. Verify service status (optional)
+# Copy-paste as a single chained block (aborts immediately if any step fails):
+cd ~/AirAlert_monitor && \
+git pull origin main && \
+bash setup.sh --dry-run && \
+bash setup.sh && \
+sudo systemctl restart airalert.service && \
 sudo systemctl status airalert.service
 ```
 
