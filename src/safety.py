@@ -1,6 +1,6 @@
 """Safety, rate-limiting, and hang-prevention module for AirAlert Telethon monitor.
 
-Provides deduplication caching, strict 1 msg/sec pacing, and timeout guards.
+Provides deduplication caching, burst-aware alert pacing, and timeout guards.
 """
 
 from __future__ import annotations
@@ -87,22 +87,58 @@ class DeduplicationCache:
 
 
 class AlertRateLimiter:
-    """Enforces minimum interval between alert dispatches (max 1 alert per interval)."""
+    """Token-bucket limiter: up to burst_capacity instant critical sends, then min_interval refill.
 
-    def __init__(self, min_interval_seconds: float = 1.0) -> None:
-        self._min_interval = min_interval_seconds
-        self._last_send_time = 0.0
+    Standard alerts also consume a token but must wait standard_interval_seconds since the
+    last send so non-critical chatter cannot drain the emergency burst reservoir.
+    """
+
+    def __init__(
+        self,
+        min_interval_seconds: float = 0.3,
+        burst_capacity: int = 3,
+        standard_interval_seconds: float = 1.0,
+    ) -> None:
+        self._min_interval = max(min_interval_seconds, 0.0)
+        self._burst_capacity = float(max(burst_capacity, 1))
+        self._standard_interval = max(standard_interval_seconds, 0.0)
+        self._tokens = self._burst_capacity
+        self._last_refill = time.monotonic()
+        self._last_send = 0.0
         self._lock = asyncio.Lock()
 
-    async def wait_turn(self) -> None:
-        """Wait until enough time has elapsed since the last alert dispatch."""
+    def _refill(self) -> None:
+        """Replenish tokens from elapsed time, clamped to burst capacity."""
+        now = time.monotonic()
+        elapsed = now - self._last_refill
+        self._last_refill = now
+        if elapsed <= 0 or self._min_interval <= 0:
+            self._tokens = self._burst_capacity
+            return
+        self._tokens = min(self._burst_capacity, self._tokens + elapsed / self._min_interval)
+
+    def _wait_seconds(self, is_critical: bool) -> float:
+        """Seconds until the next send is allowed (0 if ready now)."""
+        token_wait = 0.0
+        if self._tokens < 1.0:
+            token_wait = (1.0 - self._tokens) * self._min_interval
+        if is_critical:
+            return token_wait
+        now = time.monotonic()
+        std_wait = max(0.0, self._standard_interval - (now - self._last_send))
+        return max(token_wait, std_wait)
+
+    async def wait_turn(self, is_critical: bool = False) -> None:
+        """Wait for a send slot. Critical uses burst tokens; standard also enforces pacing."""
         async with self._lock:
-            now = time.monotonic()
-            elapsed = now - self._last_send_time
-            if elapsed < self._min_interval:
-                wait_time = self._min_interval - elapsed
+            while True:
+                self._refill()
+                wait_time = self._wait_seconds(is_critical)
+                if wait_time <= 0:
+                    self._tokens -= 1.0
+                    self._last_send = time.monotonic()
+                    return
                 await asyncio.sleep(wait_time)
-            self._last_send_time = time.monotonic()
 
 
 @dataclass

@@ -37,7 +37,7 @@ class AlertJob:
 
 
 class AlertDispatcher:
-    """Consumes alert jobs from queue, enforcing 1 alert/sec and explicit timeouts."""
+    """Consumes alert jobs from a priority queue with burst-aware critical pacing."""
 
     def __init__(
         self,
@@ -48,8 +48,15 @@ class AlertDispatcher:
         self.bot = bot_client
         self.user_client = user_client
         self.config = config
-        self.queue: asyncio.Queue[AlertJob] = asyncio.Queue(maxsize=config.queue_max_size)
-        self.rate_limiter = AlertRateLimiter(min_interval_seconds=config.alert_interval_seconds)
+        self.queue: asyncio.PriorityQueue[tuple[int, int, AlertJob]] = asyncio.PriorityQueue(
+            maxsize=config.queue_max_size
+        )
+        self.rate_limiter = AlertRateLimiter(
+            min_interval_seconds=0.3,
+            burst_capacity=3,
+            standard_interval_seconds=config.alert_interval_seconds,
+        )
+        self._seq = 0
         self._worker_task: Optional[asyncio.Task[None]] = None
         self._running = False
         self._target_entity: Optional[Any] = None
@@ -107,13 +114,22 @@ class AlertDispatcher:
         return None
 
     def set_target_entity(self, entity: Any) -> None:
-        """Cache entity directly when received from a group event."""
+        """Cache the pre-resolved Telethon peer entity to eliminate lookup latency."""
         self._target_entity = entity
+        logger.info("Dispatcher target entity pre-cached: %s", type(entity).__name__)
+
+    def send_target(self) -> Any:
+        """Return cached peer when available, otherwise the configured chat id."""
+        if self._target_entity is not None:
+            return self._target_entity
+        return self.config.target_chat_id
 
     def enqueue(self, job: AlertJob) -> bool:
-        """Add an alert job to the queue without blocking. Discards if queue is overloaded."""
+        """Add an alert job to the priority queue without blocking. Discards if overloaded."""
+        priority = 0 if job.match.tier == "critical" else 1
         try:
-            self.queue.put_nowait(job)
+            self.queue.put_nowait((priority, self._seq, job))
+            self._seq += 1
             metrics.keywords_matched += 1
             return True
         except asyncio.QueueFull:
@@ -143,14 +159,12 @@ class AlertDispatcher:
         """Main queue consumer loop with rate limiting and timeout guards."""
         while self._running:
             try:
-                # Wait for next alert job
-                job = await self.queue.get()
+                priority, _seq, job = await self.queue.get()
             except asyncio.CancelledError:
                 break
 
             try:
-                # Enforce minimum rate limit interval (e.g. 1 alert / sec)
-                await self.rate_limiter.wait_turn()
+                await self.rate_limiter.wait_turn(is_critical=(priority == 0))
                 await self._dispatch_single_alert(job)
             except Exception as exc:
                 logger.error("Unexpected error in alert dispatch loop: %s", exc, exc_info=True)
@@ -189,8 +203,8 @@ class AlertDispatcher:
 
     async def _dispatch_single_alert(self, job: AlertJob) -> None:
         """Forward original message and deliver accompanying banner."""
-        target_entity = await self.resolve_target_entity()
-        if not target_entity:
+        target = self.send_target()
+        if not target:
             logger.warning("Target chat entity not resolved. Alert queued/dropped.")
             return
 
@@ -199,7 +213,7 @@ class AlertDispatcher:
         # Send alert card with sound notifications enabled for all messages
         await safe_api_call(
             lambda: self.bot.send_message(
-                entity=target_entity,
+                entity=target,
                 message=alert_message,
                 parse_mode="html",
                 silent=False,

@@ -85,7 +85,7 @@ def setup_parser_handlers(
             if not match_result:
                 return
 
-            # 7. Construct AlertJob and enqueue for 1 msg/sec dispatch
+            # 7. Construct AlertJob and enqueue for priority dispatch
             message_date = event.message.date or datetime.datetime.now(datetime.timezone.utc)
             job = AlertJob(
                 source_chat_id=chat_id,
