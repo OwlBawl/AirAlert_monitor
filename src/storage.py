@@ -54,6 +54,8 @@ class DynamicStore:
         r"""Separate single-word and multi-word keys.
         
         - Single-word keys use word-start boundary only (?<!\w)word — allowing suffix inflections.
+        - Keys wrapped in square brackets (for example, '[бр]') use boundaries on both
+          sides and therefore match only an exact standalone word or phrase.
         - Multi-word keys (e.g. 'баліст київ') require all tokens/stems to match anywhere in the text.
         """
         single_words: List[str] = []
@@ -63,10 +65,34 @@ class DynamicStore:
             phrase = raw_phrase.strip()
             if not phrase:
                 continue
-            tokens = phrase.split()
+
+            is_strict = phrase.startswith("[") and phrase.endswith("]")
+            match_phrase = phrase[1:-1].strip() if is_strict else phrase
+            if not match_phrase:
+                continue
+
+            tokens = match_phrase.split()
             if len(tokens) == 1:
-                single_words.append(re.escape(tokens[0]))
+                escaped_word = re.escape(tokens[0])
+                if is_strict:
+                    single_words.append(escaped_word + r"(?!\w)")
+                else:
+                    single_words.append(escaped_word)
             else:
+                if is_strict:
+                    multi_patterns.append(
+                        (
+                            phrase,
+                            (
+                                re.compile(
+                                    r"(?<!\w)" + re.escape(match_phrase) + r"(?!\w)",
+                                    flags=re.IGNORECASE | re.UNICODE,
+                                ),
+                            ),
+                        )
+                    )
+                    continue
+
                 # Compile regex for each token in multi-word key.
                 # Use word-start boundary (?<!\w) allowing inflections/suffixes on stems
                 token_regexes = tuple(

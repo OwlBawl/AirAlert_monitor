@@ -27,7 +27,7 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
 
             kw_data = {
                 "critical": ["ракета", "балістика", "повітряна тривога", "баліст київ"],
-                "standard": ["дрон", "шахед", "вибух"],
+                "standard": ["дрон", "шахед", "вибух", "[бр]"],
             }
             with open(kw_file, "w", encoding="utf-8") as f:
                 json.dump(kw_data, f)
@@ -78,6 +78,17 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
             # (avoid text containing other keyword stems like "дрон" in "дронів")
             res7c = store.match_text("Увага! Київщина під загрозою атаки.")
             self.assertIsNone(res7c)
+
+            # Strict keys match only a full standalone word, case-insensitively.
+            res8 = store.match_text("З Брянська на Чернігівщину")
+            self.assertIsNone(res8)
+
+            for strict_variant in ("БР", "Бр", "бр", "бР"):
+                with self.subTest(strict_variant=strict_variant):
+                    res9 = store.match_text(f"2 реактивних {strict_variant}")
+                    self.assertIsNotNone(res9)
+                    self.assertEqual(res9.tier, "standard")
+                    self.assertIn("бр", res9.matched_words)
 
     async def test_deduplication_cache(self) -> None:
         cache = DeduplicationCache(max_size=10, ttl_seconds=0.5)
@@ -149,6 +160,12 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
 
             keys = await store.get_keywords()
             self.assertIn("кинджал", keys["critical"])
+
+            self.assertTrue(await store.add_keyword("[бр]"))
+            keys = await store.get_keywords()
+            self.assertIn("[бр]", keys["standard"])
+            self.assertIsNone(store.match_text("Брянська область"))
+            self.assertIsNotNone(store.match_text("БР рухається"))
 
             match = store.match_text("Запуск кинджал!")
             self.assertIsNotNone(match)

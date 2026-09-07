@@ -36,9 +36,9 @@ async def register_admin_bot_commands(bot: TelegramClient) -> None:
 
         admin_commands = [
             BotCommand(command="help", description="Довідка команд бота"),
-            BotCommand(command="add_key", description="Додати звичайне ключове слово"),
+            BotCommand(command="add_key", description="Додати ключ ([слово] = точний збіг)"),
             BotCommand(command="del_key", description="Видалити ключове слово"),
-            BotCommand(command="add_critical", description="Додати критичне слово (звук ON)"),
+            BotCommand(command="add_critical", description="Додати критичний ключ ([слово] = точний збіг)"),
             BotCommand(command="del_critical", description="Видалити критичне слово"),
             BotCommand(command="list_keys", description="Список усіх активних слів"),
             BotCommand(command="add_channel", description="Додати канал до моніторингу"),
@@ -129,10 +129,12 @@ def setup_bot_handlers(
         help_text = (
             "🤖 <b>AirAlert Monitor Bot - Довідка команд</b>\n\n"
             "<b>Управління ключовими словами:</b>\n"
-            "• <code>/add_key [слово]</code> - Додати звичайне ключове слово\n"
-            "• <code>/del_key [слово]</code> - Видалити слово зі словника\n"
-            "• <code>/add_critical [слово]</code> - Додати КРИТИЧНЕ слово (звук ON 🚨)\n"
-            "• <code>/del_critical [слово]</code> - Видалити критичне слово\n"
+            "• <code>/add_key ключ</code> - Додати звичайне ключове слово (основу слова)\n"
+            "• <code>/add_key [слово]</code> - Додати точне слово (без частин інших слів)\n"
+            "• <code>/del_key ключ [слово]</code> - Видалити ключ або слово\n"
+            "• <code>/add_critical ключ</code> - Додати КРИТИЧНИЙ ключове слово (основу слова)\n"
+            "• <code>/add_critical [слово]</code> - Додати точний КРИТИЧНЕ точне слово\n"
+            "• <code>/del_critical ключ [слово]</code> - Видалити критичне слово або ключ\n"
             "• <code>/list_keys</code> - Показати всі активні ключові слова\n\n"
             "<b>Управління каналами:</b>\n"
             "• <code>/add_channel [@канал або ID]</code> - Додати канал для моніторингу\n"
@@ -166,7 +168,11 @@ def setup_bot_handlers(
 
         arg = event.pattern_match.group(1)
         if not arg or not arg.strip():
-            await event.reply("⚠️ Використання: <code>/add_key [слово або фраза]</code>", parse_mode="html")
+            await event.reply(
+                "⚠️ Використання: <code>/add_key слово або фраза</code>\n"
+                "Для точного збігу: <code>/add_key [слово]</code>",
+                parse_mode="html",
+            )
             return
 
         word = arg.strip()
@@ -183,7 +189,11 @@ def setup_bot_handlers(
 
         arg = event.pattern_match.group(1)
         if not arg or not arg.strip():
-            await event.reply("⚠️ Використання: <code>/add_critical [слово або фраза]</code>", parse_mode="html")
+            await event.reply(
+                "⚠️ Використання: <code>/add_critical слово або фраза</code>\n"
+                "Для точного збігу: <code>/add_critical [слово]</code>",
+                parse_mode="html",
+            )
             return
 
         word = arg.strip()
