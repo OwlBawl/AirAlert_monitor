@@ -172,12 +172,27 @@ Any member inside the destination alert chat can manage the monitoring rules in 
 
 ## Updating Existing Installation
 
-To pull updates and restart the service on your server:
+To pull **production** updates from `main` and restart the service:
 
 ```bash
 # Copy-paste as a single chained block (aborts immediately if any step fails):
 cd ~/AirAlert_monitor && \
-git pull origin main && \
+git fetch origin main && \
+git checkout main && \
+git pull --ff-only origin main && \
+bash setup.sh --dry-run && \
+bash setup.sh && \
+sudo systemctl restart airalert.service && \
+sudo systemctl status airalert.service
+```
+
+To use the test branch (`test`) on the server:
+
+```bash
+# Copy-paste as a single chained block (aborts immediately if any step fails):
+cd ~/AirAlert_monitor && \
+git fetch origin test && \
+git checkout -B test origin/test && \
 bash setup.sh --dry-run && \
 bash setup.sh && \
 sudo systemctl restart airalert.service && \

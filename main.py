@@ -136,14 +136,6 @@ class AirAlertService:
         # Configure command menu visibility (hidden from members, visible only to admins)
         await register_admin_bot_commands(self.bot_client)
 
-        # Pre-cache target chat entity so Telethon has the access hash
-        if self.config.target_chat_id:
-            try:
-                await self.bot_client.get_entity(self.config.target_chat_id)
-                logger.info("Bot pre-cached target chat entity %d", self.config.target_chat_id)
-            except Exception as exc:
-                logger.debug("Target chat entity pre-cache deferred: %s", exc)
-
         # 3. Attach Bot command handlers
         # (Dispatcher initialized after User Client so forwards use subscribed user session)
         
@@ -161,6 +153,27 @@ class AirAlertService:
 
         # 5. Start Alert Dispatcher (with user_client for native channel forwards)
         self.dispatcher = AlertDispatcher(self.bot_client, self.config, user_client=self.user_client)
+
+        if self.config.target_chat_id:
+            try:
+                target_entity = await safe_api_call(
+                    lambda: self.bot_client.get_entity(self.config.target_chat_id),
+                    timeout_seconds=self.config.api_timeout_seconds,
+                    action_name="Pre-cache target entity",
+                )
+                if target_entity is not None:
+                    self.dispatcher.set_target_entity(target_entity)
+                    logger.info(
+                        "Successfully resolved and pre-cached target entity: %s",
+                        self.config.target_chat_id,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Could not pre-cache target entity (%s). Will fall back to raw chat_id: %s",
+                    self.config.target_chat_id,
+                    exc,
+                )
+
         self.dispatcher.start()
 
         # 6. Attach Bot command handlers
@@ -173,7 +186,11 @@ class AirAlertService:
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
         logger.info("AirAlert Monitor is fully operational.")
-        logger.info("Monitoring channels with 1 alert/sec pacing and strict escape timeouts.")
+        logger.info(
+            "Monitoring channels with critical burst (3 instant) then 300 ms throttle; "
+            "standard alerts paced at %.1fs.",
+            self.config.alert_interval_seconds,
+        )
 
     async def stop(self) -> None:
         """Gracefully terminate background tasks and disconnect sessions."""

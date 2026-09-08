@@ -13,6 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.config import AppConfig
 from src.dispatcher import AlertDispatcher, AlertJob
 from src.safety import AlertRateLimiter, DeduplicationCache, safe_api_call
 from src.storage import DynamicStore, KeywordMatch
@@ -58,6 +59,11 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(res4)
             self.assertEqual(res4.tier, "critical")
             self.assertIn("балістика", res4.matched_words)
+
+            res4b = store.match_text("Увага шахед і балістика!")
+            self.assertIsNotNone(res4b)
+            self.assertEqual(res4b.tier, "critical")
+            self.assertIn("балістика", res4b.matched_words)
 
             # 5. Non-matching sub-word (ensure "дрон" does not trigger "ескадрони")
             res5 = store.match_text("Військові ескадрони провели навчання")
@@ -122,17 +128,51 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(purged, 2)
         self.assertEqual(await cache.size(), 0)
 
-    async def test_rate_limiter_pacing(self) -> None:
-        interval = 0.15
-        limiter = AlertRateLimiter(min_interval_seconds=interval)
+    async def test_rate_limiter_burst_then_throttle(self) -> None:
+        limiter = AlertRateLimiter(
+            min_interval_seconds=0.3,
+            burst_capacity=3,
+            standard_interval_seconds=1.0,
+        )
 
         start = time.monotonic()
-        await limiter.wait_turn()
-        await limiter.wait_turn()
-        await limiter.wait_turn()
-        elapsed = time.monotonic() - start
+        await limiter.wait_turn(is_critical=True)
+        await limiter.wait_turn(is_critical=True)
+        await limiter.wait_turn(is_critical=True)
+        burst_elapsed = time.monotonic() - start
+        self.assertLess(burst_elapsed, 0.05)
 
-        self.assertGreaterEqual(elapsed, 0.28)
+        fourth_start = time.monotonic()
+        await limiter.wait_turn(is_critical=True)
+        fourth_elapsed = time.monotonic() - fourth_start
+        self.assertGreaterEqual(fourth_elapsed, 0.25)
+        self.assertLess(fourth_elapsed, 0.6)
+
+    def test_dispatcher_send_target_cache_and_fallback(self) -> None:
+        config = AppConfig(
+            api_id=1,
+            api_hash="hash",
+            bot_token="token",
+            target_chat_id=-1001234567890,
+            user_session_name="user",
+            bot_session_name="bot",
+            keywords_file=Path("keywords.json"),
+            channels_file=Path("channels.json"),
+            alert_interval_seconds=1.0,
+            api_timeout_seconds=10.0,
+            heartbeat_interval_seconds=30.0,
+            dedup_ttl_seconds=3600.0,
+            dedup_max_size=500,
+            queue_max_size=100,
+            log_max_bytes=1024,
+            log_backup_count=1,
+        )
+        dispatcher = AlertDispatcher(bot_client=None, config=config)  # type: ignore[arg-type]
+        self.assertEqual(dispatcher.send_target(), config.target_chat_id)
+
+        cached = object()
+        dispatcher.set_target_entity(cached)
+        self.assertIs(dispatcher.send_target(), cached)
 
     async def test_safe_api_call_timeout_escape(self) -> None:
         async def hung_operation() -> str:

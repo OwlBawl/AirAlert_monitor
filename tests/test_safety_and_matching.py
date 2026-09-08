@@ -60,6 +60,11 @@ async def test_word_boundary_and_tier_matching() -> None:
         assert res4.tier == "critical"
         assert "балістика" in res4.matched_words
 
+        res4b = store.match_text("Увага шахед і балістика!")
+        assert res4b is not None
+        assert res4b.tier == "critical"
+        assert "балістика" in res4b.matched_words
+
         # 5. Non-matching sub-word (ensure "дрон" does not trigger "ескадрони")
         res5 = store.match_text("Військові ескадрони провели навчання")
         assert res5 is None
@@ -99,19 +104,26 @@ async def test_deduplication_cache() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rate_limiter_pacing() -> None:
-    """Verify rate limiter enforces minimum interval (e.g. 1 alert per 0.2s for quick test)."""
-    interval = 0.2
-    limiter = AlertRateLimiter(min_interval_seconds=interval)
+async def test_rate_limiter_burst_then_throttle() -> None:
+    """Verify 3 instant critical sends, then ~300 ms throttle on the 4th."""
+    limiter = AlertRateLimiter(
+        min_interval_seconds=0.3,
+        burst_capacity=3,
+        standard_interval_seconds=1.0,
+    )
 
     start = time.monotonic()
-    await limiter.wait_turn()
-    await limiter.wait_turn()
-    await limiter.wait_turn()
-    elapsed = time.monotonic() - start
+    await limiter.wait_turn(is_critical=True)
+    await limiter.wait_turn(is_critical=True)
+    await limiter.wait_turn(is_critical=True)
+    burst_elapsed = time.monotonic() - start
+    assert burst_elapsed < 0.05, f"Burst should be instant, got {burst_elapsed:.4f}s"
 
-    # 3 calls require at least 2 interval delays = 0.4s
-    assert elapsed >= 0.38, f"Expected elapsed >= 0.38s, got {elapsed:.4f}s"
+    fourth_start = time.monotonic()
+    await limiter.wait_turn(is_critical=True)
+    fourth_elapsed = time.monotonic() - fourth_start
+    assert fourth_elapsed >= 0.25, f"Expected ~0.3s throttle, got {fourth_elapsed:.4f}s"
+    assert fourth_elapsed < 0.6, f"Throttle too long: {fourth_elapsed:.4f}s"
 
 
 @pytest.mark.asyncio
