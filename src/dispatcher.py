@@ -174,24 +174,29 @@ class AlertDispatcher:
 
     @staticmethod
     def format_alert(job: AlertJob) -> str:
-        """Format the alert message with optional critical banner above the quote."""
-        is_critical = job.match.tier == "critical"
+        """Format the alert message with tier banner above the quote."""
+        tier = job.match.tier
+        if tier == "critical":
+            banner = "‼️🚨‼️\n"
+        elif tier == "cancellation_critical":
+            banner = "🟡⚠️🟡\n"
+        elif tier == "cancellation_standard":
+            banner = "🟢✅🟢\n"
+        else:
+            banner = ""
 
-        # 1. Critical banner — standalone line above the quote
-        crit_banner = "‼️🚨‼️\n" if is_critical else ""
-
-        # 2. Quoted original message text
+        # Quoted original message text
         clean_text = job.message_text.strip()
         if len(clean_text) > 3500:
             clean_text = clean_text[:3500] + "..."
         quoted_text = f"<blockquote>{html.escape(clean_text)}</blockquote>"
 
-        # 3. Channel and matched key(s)
+        # Channel and matched key(s)
         matched_str = ", ".join(job.match.matched_words)
         channel_name = job.source_chat_title or (f"@{job.source_chat_username}" if job.source_chat_username else "Channel")
         channel_key_line = f"📢 {html.escape(channel_name)}: {html.escape(matched_str)}"
 
-        # 4. Direct link to message
+        # Direct link to message
         if job.source_chat_username:
             msg_link = f"https://t.me/{job.source_chat_username}/{job.message_id}"
         else:
@@ -199,7 +204,7 @@ class AlertDispatcher:
             msg_link = f"https://t.me/c/{clean_id}/{job.message_id}"
         link_line = f"🔗 {msg_link}"
 
-        return f"{crit_banner}{quoted_text}\n{channel_key_line}\n{link_line}"
+        return f"{banner}{quoted_text}\n{channel_key_line}\n{link_line}"
 
     async def _dispatch_single_alert(self, job: AlertJob) -> None:
         """Forward original message and deliver accompanying banner."""
@@ -209,14 +214,15 @@ class AlertDispatcher:
             return
 
         alert_message = self.format_alert(job)
+        is_cancellation = job.match.tier.startswith("cancellation")
 
-        # Send alert card with sound notifications enabled for all messages
+        # Send alert card (silent for cancellation alerts, sound enabled for active alerts)
         await safe_api_call(
             lambda: self.bot.send_message(
                 entity=target,
                 message=alert_message,
                 parse_mode="html",
-                silent=False,
+                silent=is_cancellation,
                 link_preview=False,
             ),
             timeout_seconds=self.config.api_timeout_seconds,

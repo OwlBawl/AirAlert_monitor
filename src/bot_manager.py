@@ -36,10 +36,12 @@ async def register_admin_bot_commands(bot: TelegramClient) -> None:
 
         admin_commands = [
             BotCommand(command="help", description="Довідка команд бота"),
-            BotCommand(command="add_key", description="Додати ключ ([слово] = точний збіг)"),
-            BotCommand(command="del_key", description="Видалити ключове слово"),
-            BotCommand(command="add_critical", description="Додати критичний ключ ([слово] = точний збіг)"),
-            BotCommand(command="del_critical", description="Видалити критичне слово"),
+            BotCommand(command="add_critical", description="Додати КРИТИЧНИЙ ключ ([слово] = точний збіг, -мінус)"),
+            BotCommand(command="del_critical", description="Видалити критичний ключ"),
+            BotCommand(command="add_key", description="Додати звичайний ключ ([слово] = точний збіг, -мінус)"),
+            BotCommand(command="del_key", description="Видалити звичайний ключ"),
+            BotCommand(command="add_cancel", description="Додати ключ відміни ([слово] = точний збіг, -мінус)"),
+            BotCommand(command="del_cancel", description="Видалити ключ відміни"),
             BotCommand(command="list_keys", description="Список усіх активних слів"),
             BotCommand(command="add_channel", description="Додати канал до моніторингу"),
             BotCommand(command="del_channel", description="Видалити канал з моніторингу"),
@@ -127,22 +129,26 @@ def setup_bot_handlers(
             return
 
         help_text = (
-            "🤖 <b>AirAlert Monitor Bot - Довідка команд</b>\n\n"
+            "🤖 <b>AirAlert Monitor Bot — Довідка команд</b>\n\n"
             "<b>Управління ключовими словами:</b>\n"
-            "• <code>/add_key ключ</code> - Додати звичайне ключове слово (основу слова)\n"
-            "• <code>/add_key [слово]</code> - Додати звичайне точне слово (без частин інших слів)\n"
-            "• <code>/del_key ключ [слово]</code> - Видалити звичайне слово або ключ\n"
-            "• <code>/add_critical ключ</code> - Додати КРИТИЧНЕ ключове слово (основу слова)\n"
-            "• <code>/add_critical [слово]</code> - Додати КРИТИЧНЕ точне слово\n"
-            "• <code>/del_critical ключ [слово]</code> - Видалити КРИТИЧНЕ слово або ключ\n"
-            "• <code>/list_keys</code> - Показати всі активні ключові слова\n\n"
+            "• <code>/add_critical [слово]</code> або <code>ключ</code> — Додати КРИТИЧНЕ (🚨)\n"
+            "• <code>/del_critical [слово]</code> або <code>ключ</code> — Видалити з критичних\n"
+            "• <code>/add_key [слово]</code> або <code>ключ</code> — Додати звичайне (⚠️)\n"
+            "• <code>/del_key [слово]</code> або <code>ключ</code> — Видалити зі звичайних\n"
+            "• <code>/add_cancel [слово]</code> або <code>ключ</code> — Додати ключ відміни (✅)\n"
+            "• <code>/del_cancel [слово]</code> або <code>ключ</code> — Видалити з відміни\n"
+            "• <code>/list_keys</code> — Список усіх активних слів\n\n"
+            "<b>💡 Формати запису слів:</b>\n"
+            "• <code>ключ</code> (основа) — збіг за початком слова та закінченнями (напр. <i>баліст</i> знайде <i>балістика, балістичні</i>)\n"
+            "• <code>[слово]</code> (в дужках) — <b>ТОЧНИЙ збіг</b> окремого слова (напр. <i>[бр]</i> знайде окреме слово <i>бр</i>, але НЕ зреагує на <i>зброя</i> чи <i>добра</i>)\n"
+            "• <code>-мінус</code> або <code>-[слово]</code> — <b>СТОП-СЛОВО</b> (блокує сповіщення при наявності в тексті, напр. <i>-навчання</i>)\n\n"
             "<b>Управління каналами:</b>\n"
-            "• <code>/add_channel [@канал або ID]</code> - Додати канал для моніторингу\n"
-            "• <code>/del_channel [@канал або ID]</code> - Видалити канал\n"
-            "• <code>/list_channels</code> - Список каналів моніторингу\n\n"
+            "• <code>/add_channel [@канал або ID]</code> — Додати канал для моніторингу\n"
+            "• <code>/del_channel [@канал або ID]</code> — Видалити канал\n"
+            "• <code>/list_channels</code> — Список каналів моніторингу\n\n"
             "<b>Система:</b>\n"
-            "• <code>/status</code> - Метрики стану, аптайм, черга сповіщень\n"
-            "• <code>/id</code> - Показати поточний ID цього чату\n"
+            "• <code>/status</code> — Метрики стану, аптайм, черга сповіщень\n"
+            "• <code>/id</code> — Показати поточний ID цього чату\n"
         )
         await safe_api_call(
             lambda: event.reply(help_text, parse_mode="html"),
@@ -161,27 +167,6 @@ def setup_bot_handlers(
             action_name="Bot ID Reply",
         )
 
-    @bot.on(events.NewMessage(pattern=r"^/add_key(?:@\w+)?(?:\s+(.+)|$)"))
-    async def handle_add_key(event: events.NewMessage.Event) -> None:
-        if not await is_sender_admin(event):
-            return
-
-        arg = event.pattern_match.group(1)
-        if not arg or not arg.strip():
-            await event.reply(
-                "⚠️ Використання: <code>/add_key слово або фраза</code>\n"
-                "Для точного збігу: <code>/add_key [слово]</code>",
-                parse_mode="html",
-            )
-            return
-
-        word = arg.strip()
-        added = await store.add_keyword(word, tier="standard")
-        if added:
-            await event.reply(f"✅ Додано звичайне ключове слово: <code>{html.escape(word)}</code>", parse_mode="html")
-        else:
-            await event.reply(f"ℹ️ Слово вже є у списку: <code>{html.escape(word)}</code>", parse_mode="html")
-
     @bot.on(events.NewMessage(pattern=r"^/add_critical(?:@\w+)?(?:\s+(.+)|$)"))
     async def handle_add_critical(event: events.NewMessage.Event) -> None:
         if not await is_sender_admin(event):
@@ -190,8 +175,11 @@ def setup_bot_handlers(
         arg = event.pattern_match.group(1)
         if not arg or not arg.strip():
             await event.reply(
-                "⚠️ Використання: <code>/add_critical слово або фраза</code>\n"
-                "Для точного збігу: <code>/add_critical [слово]</code>",
+                "⚠️ Використання: <code>/add_critical [слово або фраза]</code>\n\n"
+                "<b>Варіанти:</b>\n"
+                "• <code>/add_critical слово</code> — збіг за основою (знайде <i>слово, слова, словами</i>)\n"
+                "• <code>/add_critical [слово]</code> — <b>точний збіг</b> (тільки окреме слово <i>слово</i>, без частин інших слів)\n"
+                "• <code>/add_critical -слово</code> або <code>-[слово]</code> — стоп-слово (блокує сповіщення)",
                 parse_mode="html",
             )
             return
@@ -199,26 +187,126 @@ def setup_bot_handlers(
         word = arg.strip()
         added = await store.add_keyword(word, tier="critical")
         if added:
-            await event.reply(f"🚨 Додано <b>КРИТИЧНЕ</b> слово: <code>{html.escape(word)}</code>", parse_mode="html")
+            if word.startswith("-"):
+                label = "стоп-слово до критичних"
+            elif word.startswith("[") and word.endswith("]"):
+                label = "точне <b>КРИТИЧНЕ</b> слово [ ]"
+            else:
+                label = "<b>КРИТИЧНЕ</b> слово"
+            await event.reply(f"🚨 Додано {label}: <code>{html.escape(word)}</code>", parse_mode="html")
         else:
             await event.reply(f"ℹ️ Слово вже є у списку критичних: <code>{html.escape(word)}</code>", parse_mode="html")
 
-    @bot.on(events.NewMessage(pattern=r"^/(?:del_key|del_critical)(?:@\w+)?(?:\s+(.+)|$)"))
+    @bot.on(events.NewMessage(pattern=r"^/del_critical(?:@\w+)?(?:\s+(.+)|$)"))
+    async def handle_del_critical(event: events.NewMessage.Event) -> None:
+        if not await is_sender_admin(event):
+            return
+
+        arg = event.pattern_match.group(1)
+        if not arg or not arg.strip():
+            await event.reply("⚠️ Використання: <code>/del_critical слово</code>, <code>[слово]</code> або <code>-мінус-слово</code>", parse_mode="html")
+            return
+
+        word = arg.strip()
+        removed = await store.remove_keyword(word, tier="critical")
+        if removed:
+            await event.reply(f"🗑 Видалено з критичних: <code>{html.escape(word)}</code>", parse_mode="html")
+        else:
+            await event.reply(f"⚠️ Слово не знайдено в списку критичних: <code>{html.escape(word)}</code>", parse_mode="html")
+
+    @bot.on(events.NewMessage(pattern=r"^/add_key(?:@\w+)?(?:\s+(.+)|$)"))
+    async def handle_add_key(event: events.NewMessage.Event) -> None:
+        if not await is_sender_admin(event):
+            return
+
+        arg = event.pattern_match.group(1)
+        if not arg or not arg.strip():
+            await event.reply(
+                "⚠️ Використання: <code>/add_key [слово або фраза]</code>\n\n"
+                "<b>Варіанти:</b>\n"
+                "• <code>/add_key слово</code> — збіг за основою (знайде <i>слово, слова, словами</i>)\n"
+                "• <code>/add_key [слово]</code> — <b>точний збіг</b> (тільки окреме слово <i>слово</i>, без частин інших слів)\n"
+                "• <code>/add_key -слово</code> або <code>-[слово]</code> — стоп-слово (блокує сповіщення)",
+                parse_mode="html",
+            )
+            return
+
+        word = arg.strip()
+        added = await store.add_keyword(word, tier="standard")
+        if added:
+            if word.startswith("-"):
+                label = "стоп-слово до звичайних"
+            elif word.startswith("[") and word.endswith("]"):
+                label = "точне звичайне слово [ ]"
+            else:
+                label = "звичайне ключове слово"
+            await event.reply(f"✅ Додано {label}: <code>{html.escape(word)}</code>", parse_mode="html")
+        else:
+            await event.reply(f"ℹ️ Слово вже є у списку звичайних: <code>{html.escape(word)}</code>", parse_mode="html")
+
+    @bot.on(events.NewMessage(pattern=r"^/del_key(?:@\w+)?(?:\s+(.+)|$)"))
     async def handle_del_key(event: events.NewMessage.Event) -> None:
         if not await is_sender_admin(event):
             return
 
         arg = event.pattern_match.group(1)
         if not arg or not arg.strip():
-            await event.reply("⚠️ Використання: <code>/del_key [слово]</code>", parse_mode="html")
+            await event.reply("⚠️ Використання: <code>/del_key слово</code>, <code>[слово]</code> або <code>-мінус-слово</code>", parse_mode="html")
             return
 
         word = arg.strip()
-        removed = await store.remove_keyword(word)
+        removed = await store.remove_keyword(word, tier="standard")
         if removed:
-            await event.reply(f"🗑 Видалено слово: <code>{html.escape(word)}</code>", parse_mode="html")
+            await event.reply(f"🗑 Видалено зі звичайних: <code>{html.escape(word)}</code>", parse_mode="html")
         else:
-            await event.reply(f"⚠️ Слово не знайдено у словнику: <code>{html.escape(word)}</code>", parse_mode="html")
+            await event.reply(f"⚠️ Слово не знайдено в списку звичайних: <code>{html.escape(word)}</code>", parse_mode="html")
+
+    @bot.on(events.NewMessage(pattern=r"^/add_cancel(?:@\w+)?(?:\s+(.+)|$)"))
+    async def handle_add_cancel(event: events.NewMessage.Event) -> None:
+        if not await is_sender_admin(event):
+            return
+
+        arg = event.pattern_match.group(1)
+        if not arg or not arg.strip():
+            await event.reply(
+                "⚠️ Використання: <code>/add_cancel [слово або фраза]</code>\n\n"
+                "<b>Варіанти:</b>\n"
+                "• <code>/add_cancel слово</code> — збіг за основою (знайде <i>відбій, відбою</i>)\n"
+                "• <code>/add_cancel [слово]</code> — <b>точний збіг</b> (тільки окреме слово, без частин інших слів)\n"
+                "• <code>/add_cancel -слово</code> або <code>-[слово]</code> — стоп-слово (блокує відміну)",
+                parse_mode="html",
+            )
+            return
+
+        word = arg.strip()
+        added = await store.add_keyword(word, tier="cancellation")
+        if added:
+            if word.startswith("-"):
+                label = "стоп-слово до відміни"
+            elif word.startswith("[") and word.endswith("]"):
+                label = "точний ключ відміни [ ]"
+            else:
+                label = "ключ відміни"
+            await event.reply(f"🟢 Додано {label}: <code>{html.escape(word)}</code>", parse_mode="html")
+        else:
+            await event.reply(f"ℹ️ Слово вже є у списку відміни: <code>{html.escape(word)}</code>", parse_mode="html")
+
+    @bot.on(events.NewMessage(pattern=r"^/del_cancel(?:@\w+)?(?:\s+(.+)|$)"))
+    async def handle_del_cancel(event: events.NewMessage.Event) -> None:
+        if not await is_sender_admin(event):
+            return
+
+        arg = event.pattern_match.group(1)
+        if not arg or not arg.strip():
+            await event.reply("⚠️ Використання: <code>/del_cancel слово</code>, <code>[слово]</code> або <code>-мінус-слово</code>", parse_mode="html")
+            return
+
+        word = arg.strip()
+        removed = await store.remove_keyword(word, tier="cancellation")
+        if removed:
+            await event.reply(f"🗑 Видалено з ключів відміни: <code>{html.escape(word)}</code>", parse_mode="html")
+        else:
+            await event.reply(f"⚠️ Слово не знайдено в списку відміни: <code>{html.escape(word)}</code>", parse_mode="html")
 
     @bot.on(events.NewMessage(pattern=r"^/list_keys(?:@\w+)?$"))
     async def handle_list_keys(event: events.NewMessage.Event) -> None:
@@ -226,13 +314,22 @@ def setup_bot_handlers(
             return
 
         keys = await store.get_keywords()
-        crit_list = "\n".join(f"• <code>{html.escape(w)}</code>" for w in keys["critical"]) or "<i>(порожньо)</i>"
-        std_list = "\n".join(f"• <code>{html.escape(w)}</code>" for w in keys["standard"]) or "<i>(порожньо)</i>"
+
+        def format_group(pos_list: List[str], neg_list: List[str]) -> str:
+            items = [f"• <code>{html.escape(w)}</code>" for w in pos_list]
+            for nw in neg_list:
+                items.append(f"⊖ <code>-{html.escape(nw)}</code>")
+            return "\n".join(items) if items else "<i>(порожньо)</i>"
+
+        crit_block = format_group(keys.get("critical", []), keys.get("critical_negative", []))
+        std_block = format_group(keys.get("standard", []), keys.get("standard_negative", []))
+        cancel_block = format_group(keys.get("cancellation", []), keys.get("cancellation_negative", []))
 
         msg = (
             f"📋 <b>Активні ключові слова:</b>\n\n"
-            f"🚨 <b>Критичні ({len(keys['critical'])}):</b>\n{crit_list}\n\n"
-            f"⚠️ <b>Звичайні ({len(keys['standard'])}):</b>\n{std_list}"
+            f"🚨 <b>Критичні ({len(keys.get('critical', []))}):</b>\n{crit_block}\n\n"
+            f"⚠️ <b>Звичайні ({len(keys.get('standard', []))}):</b>\n{std_block}\n\n"
+            f"✅ <b>Відміна ({len(keys.get('cancellation', []))}):</b>\n{cancel_block}"
         )
         await safe_api_call(
             lambda: event.reply(msg, parse_mode="html"),

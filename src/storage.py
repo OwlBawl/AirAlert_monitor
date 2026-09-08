@@ -35,7 +35,11 @@ class DynamicStore:
 
         # In-memory keyword collections
         self._critical_keywords: Set[str] = set()
+        self._critical_negative: Set[str] = set()
         self._standard_keywords: Set[str] = set()
+        self._standard_negative: Set[str] = set()
+        self._cancellation_keywords: Set[str] = set()
+        self._cancellation_negative: Set[str] = set()
 
         # In-memory monitored channels (stores int IDs and lowercased usernames)
         self._monitored_channels: Set[Union[int, str]] = set()
@@ -43,10 +47,20 @@ class DynamicStore:
         # Precompiled single-word regex patterns
         self._critical_single_regex: Optional[re.Pattern[str]] = None
         self._standard_single_regex: Optional[re.Pattern[str]] = None
+        self._cancellation_single_regex: Optional[re.Pattern[str]] = None
 
         # Precompiled multi-word AND criteria: list of (original_phrase, tuple of token regexes)
         self._critical_multi_patterns: List[Tuple[str, Tuple[re.Pattern[str], ...]]] = []
         self._standard_multi_patterns: List[Tuple[str, Tuple[re.Pattern[str], ...]]] = []
+        self._cancellation_multi_patterns: List[Tuple[str, Tuple[re.Pattern[str], ...]]] = []
+
+        # Precompiled regex patterns for negative stop-words
+        self._critical_neg_single: Optional[re.Pattern[str]] = None
+        self._critical_neg_multi: List[Tuple[str, Tuple[re.Pattern[str], ...]]] = []
+        self._standard_neg_single: Optional[re.Pattern[str]] = None
+        self._standard_neg_multi: List[Tuple[str, Tuple[re.Pattern[str], ...]]] = []
+        self._cancellation_neg_single: Optional[re.Pattern[str]] = None
+        self._cancellation_neg_multi: List[Tuple[str, Tuple[re.Pattern[str], ...]]] = []
 
     def _compile_tier_patterns(
         self, words: Set[str]
@@ -134,10 +148,52 @@ class DynamicStore:
             self._load_keywords_sync()
             self._load_channels_sync()
 
+    def _recompile_patterns(self) -> None:
+        """Recompile all regex patterns for positive and negative keywords across all tiers."""
+        self._critical_single_regex, self._critical_multi_patterns = self._compile_tier_patterns(
+            self._critical_keywords
+        )
+        self._critical_neg_single, self._critical_neg_multi = self._compile_tier_patterns(
+            self._critical_negative
+        )
+
+        self._standard_single_regex, self._standard_multi_patterns = self._compile_tier_patterns(
+            self._standard_keywords
+        )
+        self._standard_neg_single, self._standard_neg_multi = self._compile_tier_patterns(
+            self._standard_negative
+        )
+
+        self._cancellation_single_regex, self._cancellation_multi_patterns = self._compile_tier_patterns(
+            self._cancellation_keywords
+        )
+        self._cancellation_neg_single, self._cancellation_neg_multi = self._compile_tier_patterns(
+            self._cancellation_negative
+        )
+
+    def _save_keywords_sync(self) -> None:
+        """Synchronously persist keyword sets to disk atomically."""
+        data = {
+            "critical": sorted(list(self._critical_keywords)),
+            "critical_negative": sorted(list(self._critical_negative)),
+            "standard": sorted(list(self._standard_keywords)),
+            "standard_negative": sorted(list(self._standard_negative)),
+            "cancellation": sorted(list(self._cancellation_keywords)),
+            "cancellation_negative": sorted(list(self._cancellation_negative)),
+        }
+        self._atomic_write_json(self.keywords_file, data)
+
     def _load_keywords_sync(self) -> None:
         """Synchronously parse keywords file and compile regex patterns."""
         if not self.keywords_file.exists():
-            default_keywords = {"critical": [], "standard": []}
+            default_keywords = {
+                "critical": [],
+                "critical_negative": [],
+                "standard": [],
+                "standard_negative": [],
+                "cancellation": [],
+                "cancellation_negative": [],
+            }
             self._atomic_write_json(self.keywords_file, default_keywords)
 
         try:
@@ -147,21 +203,32 @@ class DynamicStore:
             self._critical_keywords = {
                 w.strip().lower() for w in data.get("critical", []) if isinstance(w, str) and w.strip()
             }
+            self._critical_negative = {
+                w.strip().lower() for w in data.get("critical_negative", []) if isinstance(w, str) and w.strip()
+            }
             self._standard_keywords = {
                 w.strip().lower() for w in data.get("standard", []) if isinstance(w, str) and w.strip()
             }
+            self._standard_negative = {
+                w.strip().lower() for w in data.get("standard_negative", []) if isinstance(w, str) and w.strip()
+            }
+            self._cancellation_keywords = {
+                w.strip().lower() for w in data.get("cancellation", []) if isinstance(w, str) and w.strip()
+            }
+            self._cancellation_negative = {
+                w.strip().lower() for w in data.get("cancellation_negative", []) if isinstance(w, str) and w.strip()
+            }
 
-            self._critical_single_regex, self._critical_multi_patterns = self._compile_tier_patterns(
-                self._critical_keywords
-            )
-            self._standard_single_regex, self._standard_multi_patterns = self._compile_tier_patterns(
-                self._standard_keywords
-            )
+            self._recompile_patterns()
 
             logger.info(
-                "Loaded %d critical and %d standard keywords.",
+                "Loaded %d crit (+%d neg), %d std (+%d neg), %d cancel (+%d neg) keywords.",
                 len(self._critical_keywords),
+                len(self._critical_negative),
                 len(self._standard_keywords),
+                len(self._standard_negative),
+                len(self._cancellation_keywords),
+                len(self._cancellation_negative),
             )
         except Exception as exc:
             logger.error("Error reading keywords from %s: %s", self.keywords_file, exc, exc_info=True)
@@ -193,78 +260,89 @@ class DynamicStore:
             logger.error("Error reading channels from %s: %s", self.channels_file, exc, exc_info=True)
 
     async def add_keyword(self, word: str, tier: str = "standard") -> bool:
-        """Add a keyword to either critical or standard list dynamically."""
+        """Add a keyword or stop-word (with '-' prefix) to critical, standard, or cancellation list."""
         cleaned = word.strip().lower()
         if not cleaned:
+            return False
+
+        is_negative = cleaned.startswith("-")
+        lookup_word = cleaned[1:].strip() if is_negative else cleaned
+        if not lookup_word:
             return False
 
         tier = tier.lower()
-        if tier not in ("critical", "standard"):
+        if tier not in ("critical", "standard", "cancellation"):
             tier = "standard"
 
         async with self._lock:
-            target_set = self._critical_keywords if tier == "critical" else self._standard_keywords
-            if cleaned in target_set:
+            if tier == "critical":
+                target_set = self._critical_negative if is_negative else self._critical_keywords
+            elif tier == "cancellation":
+                target_set = self._cancellation_negative if is_negative else self._cancellation_keywords
+            else:
+                target_set = self._standard_negative if is_negative else self._standard_keywords
+
+            if lookup_word in target_set:
                 return False  # Already exists
 
-            # Remove from opposite tier if present to maintain clear tiering
-            if tier == "critical":
-                self._standard_keywords.discard(cleaned)
-                self._critical_keywords.add(cleaned)
-            else:
-                self._critical_keywords.discard(cleaned)
-                self._standard_keywords.add(cleaned)
+            # If positive keyword, remove from other positive tiers to maintain clear tiering
+            if not is_negative:
+                if tier == "critical":
+                    self._standard_keywords.discard(lookup_word)
+                    self._cancellation_keywords.discard(lookup_word)
+                elif tier == "cancellation":
+                    self._critical_keywords.discard(lookup_word)
+                    self._standard_keywords.discard(lookup_word)
+                else:
+                    self._critical_keywords.discard(lookup_word)
+                    self._cancellation_keywords.discard(lookup_word)
 
-            self._critical_single_regex, self._critical_multi_patterns = self._compile_tier_patterns(
-                self._critical_keywords
-            )
-            self._standard_single_regex, self._standard_multi_patterns = self._compile_tier_patterns(
-                self._standard_keywords
-            )
-
-            data = {
-                "critical": sorted(list(self._critical_keywords)),
-                "standard": sorted(list(self._standard_keywords)),
-            }
-            self._atomic_write_json(self.keywords_file, data)
+            target_set.add(lookup_word)
+            self._recompile_patterns()
+            self._save_keywords_sync()
             return True
 
-    async def remove_keyword(self, word: str) -> bool:
-        """Remove a keyword from whatever tier it exists in."""
+    async def remove_keyword(self, word: str, tier: str = "standard") -> bool:
+        """Remove a keyword or stop-word (with '-' prefix) strictly from the specified tier."""
         cleaned = word.strip().lower()
         if not cleaned:
             return False
 
+        is_negative = cleaned.startswith("-")
+        lookup_word = cleaned[1:].strip() if is_negative else cleaned
+        if not lookup_word:
+            return False
+
+        tier = tier.lower()
+        if tier not in ("critical", "standard", "cancellation"):
+            tier = "standard"
+
         async with self._lock:
-            in_crit = cleaned in self._critical_keywords
-            in_std = cleaned in self._standard_keywords
+            if tier == "critical":
+                target_set = self._critical_negative if is_negative else self._critical_keywords
+            elif tier == "cancellation":
+                target_set = self._cancellation_negative if is_negative else self._cancellation_keywords
+            else:
+                target_set = self._standard_negative if is_negative else self._standard_keywords
 
-            if not in_crit and not in_std:
-                return False
+            if lookup_word not in target_set:
+                return False  # Not found in this specific tier
 
-            self._critical_keywords.discard(cleaned)
-            self._standard_keywords.discard(cleaned)
-
-            self._critical_single_regex, self._critical_multi_patterns = self._compile_tier_patterns(
-                self._critical_keywords
-            )
-            self._standard_single_regex, self._standard_multi_patterns = self._compile_tier_patterns(
-                self._standard_keywords
-            )
-
-            data = {
-                "critical": sorted(list(self._critical_keywords)),
-                "standard": sorted(list(self._standard_keywords)),
-            }
-            self._atomic_write_json(self.keywords_file, data)
+            target_set.remove(lookup_word)
+            self._recompile_patterns()
+            self._save_keywords_sync()
             return True
 
     async def get_keywords(self) -> Dict[str, List[str]]:
-        """Return snapshot of current keywords by tier."""
+        """Return snapshot of current keywords and negative words by tier."""
         async with self._lock:
             return {
                 "critical": sorted(list(self._critical_keywords)),
+                "critical_negative": sorted(list(self._critical_negative)),
                 "standard": sorted(list(self._standard_keywords)),
+                "standard_negative": sorted(list(self._standard_negative)),
+                "cancellation": sorted(list(self._cancellation_keywords)),
+                "cancellation_negative": sorted(list(self._cancellation_negative)),
             }
 
     async def add_channel(self, channel_identifier: Union[int, str]) -> bool:
@@ -339,35 +417,77 @@ class DynamicStore:
 
         return False
 
+    @staticmethod
+    def _has_pattern_match(
+        text: str,
+        single_rx: Optional[re.Pattern[str]],
+        multi_pts: List[Tuple[str, Tuple[re.Pattern[str], ...]]],
+    ) -> bool:
+        """Return True if text matches either single regex or all tokens in any multi-word pattern."""
+        if single_rx is not None and single_rx.search(text):
+            return True
+        for _phrase, token_regexes in multi_pts:
+            if all(rx.search(text) for rx in token_regexes):
+                return True
+        return False
+
+    @staticmethod
+    def _find_positive_match(
+        text: str,
+        single_rx: Optional[re.Pattern[str]],
+        multi_pts: List[Tuple[str, Tuple[re.Pattern[str], ...]]],
+    ) -> Optional[Tuple[str, ...]]:
+        """Find matching phrases or words for a tier."""
+        for phrase, token_regexes in multi_pts:
+            if all(rx.search(text) for rx in token_regexes):
+                return (phrase,)
+        if single_rx is not None:
+            matches = single_rx.findall(text)
+            if matches:
+                return tuple(dict.fromkeys(m.lower() for m in matches))
+        return None
+
     def match_text(self, text: Optional[str]) -> Optional[KeywordMatch]:
-        """Evaluate text against compiled regexes and multi-word patterns, prioritizing critical tier."""
+        """Evaluate text against compiled regexes and patterns, prioritizing cancellation, critical, then standard."""
         if not text:
             return None
 
-        # 1. Check CRITICAL tier first
-        # 1a. Critical multi-word patterns (all words/stems must be present in text)
-        for phrase, token_regexes in self._critical_multi_patterns:
-            if all(rx.search(text) for rx in token_regexes):
-                return KeywordMatch(tier="critical", matched_words=(phrase,))
+        # 1. Check CANCELLATION tier first
+        cancel_matches = self._find_positive_match(
+            text, self._cancellation_single_regex, self._cancellation_multi_patterns
+        )
+        if cancel_matches:
+            # If negated by cancellation stop-word, suppress alert entirely
+            if self._has_pattern_match(text, self._cancellation_neg_single, self._cancellation_neg_multi):
+                return None
 
-        # 1b. Critical single-word regex
-        if self._critical_single_regex is not None:
-            matches = self._critical_single_regex.findall(text)
-            if matches:
-                unique_matches = tuple(dict.fromkeys(m.lower() for m in matches))
-                return KeywordMatch(tier="critical", matched_words=unique_matches)
+            # Check if this cancellation refers to a critical threat
+            crit_matches = self._find_positive_match(
+                text, self._critical_single_regex, self._critical_multi_patterns
+            )
+            is_crit_cancel = (
+                crit_matches is not None
+                and not self._has_pattern_match(text, self._critical_neg_single, self._critical_neg_multi)
+            )
+            tier = "cancellation_critical" if is_crit_cancel else "cancellation_standard"
+            return KeywordMatch(tier=tier, matched_words=cancel_matches)
 
-        # 2. Check STANDARD tier
-        # 2a. Standard multi-word patterns (all words/stems must be present in text)
-        for phrase, token_regexes in self._standard_multi_patterns:
-            if all(rx.search(text) for rx in token_regexes):
-                return KeywordMatch(tier="standard", matched_words=(phrase,))
+        # 2. Check CRITICAL tier
+        crit_matches = self._find_positive_match(
+            text, self._critical_single_regex, self._critical_multi_patterns
+        )
+        if crit_matches:
+            # If negated by critical stop-word, suppress alert entirely
+            if self._has_pattern_match(text, self._critical_neg_single, self._critical_neg_multi):
+                return None
+            return KeywordMatch(tier="critical", matched_words=crit_matches)
 
-        # 2b. Standard single-word regex
-        if self._standard_single_regex is not None:
-            matches = self._standard_single_regex.findall(text)
-            if matches:
-                unique_matches = tuple(dict.fromkeys(m.lower() for m in matches))
-                return KeywordMatch(tier="standard", matched_words=unique_matches)
+        # 3. Check STANDARD tier
+        std_matches = self._find_positive_match(
+            text, self._standard_single_regex, self._standard_multi_patterns
+        )
+        if std_matches:
+            if not self._has_pattern_match(text, self._standard_neg_single, self._standard_neg_multi):
+                return KeywordMatch(tier="standard", matched_words=std_matches)
 
         return None

@@ -211,10 +211,16 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(match)
             self.assertEqual(match.tier, "critical")
 
-            # Remove keyword
-            self.assertTrue(await store.remove_keyword("кинджал"))
-            self.assertFalse(await store.remove_keyword("nonexistent"))
+            # Strict removal by tier
+            self.assertFalse(await store.remove_keyword("кинджал", tier="standard"))
+            self.assertTrue(await store.remove_keyword("кинджал", tier="critical"))
+            self.assertFalse(await store.remove_keyword("nonexistent", tier="critical"))
             self.assertIsNone(store.match_text("Запуск кинджал!"))
+
+            # Add / remove negative keyword
+            self.assertTrue(await store.add_keyword("-каб", tier="standard"))
+            self.assertFalse(await store.remove_keyword("-каб", tier="critical"))
+            self.assertTrue(await store.remove_keyword("-каб", tier="standard"))
 
             # Add / remove channel
             self.assertTrue(await store.add_channel("@my_channel"))
@@ -225,10 +231,81 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await store.remove_channel("@my_channel"))
             self.assertFalse(store.is_channel_monitored(999, "my_channel"))
 
+    async def test_negative_keywords_blocking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            kw_file = Path(tmp_dir) / "keywords.json"
+            ch_file = Path(tmp_dir) / "channels.json"
+
+            kw_data = {
+                "critical": ["крилат"],
+                "critical_negative": ["навчання"],
+                "standard": ["пуск"],
+                "standard_negative": ["каб"],
+                "cancellation": [],
+                "cancellation_negative": [],
+            }
+            with open(kw_file, "w", encoding="utf-8") as f:
+                json.dump(kw_data, f)
+
+            store = DynamicStore(kw_file, ch_file)
+            await store.load_all()
+
+            # Positive critical match
+            m1 = store.match_text("Пуски крилатих ракет з бортів Ту-95")
+            self.assertIsNotNone(m1)
+            self.assertEqual(m1.tier, "critical")
+
+            # Blocked critical match by negative stop-word
+            m2 = store.match_text("Пуски крилатих ракет (навчання екіпажів)")
+            self.assertIsNone(m2)
+
+            # Positive standard match
+            m3 = store.match_text("Зафіксовано пуск невідомої цілі")
+            self.assertIsNotNone(m3)
+            self.assertEqual(m3.tier, "standard")
+
+            # Blocked standard match by negative stop-word
+            m4 = store.match_text("Пуски КАБ у напрямку Харкова")
+            self.assertIsNone(m4)
+
+    async def test_cancellation_tier_and_negation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            kw_file = Path(tmp_dir) / "keywords.json"
+            ch_file = Path(tmp_dir) / "channels.json"
+
+            kw_data = {
+                "critical": ["балісти"],
+                "critical_negative": [],
+                "standard": ["шахед"],
+                "standard_negative": [],
+                "cancellation": ["відбій", "чисто"],
+                "cancellation_negative": ["очікуємо"],
+            }
+            with open(kw_file, "w", encoding="utf-8") as f:
+                json.dump(kw_data, f)
+
+            store = DynamicStore(kw_file, ch_file)
+            await store.load_all()
+
+            # Critical cancellation: cancellation key + critical threat mentioned
+            m_crit_cancel = store.match_text("Відбій загрози балістики для центральних областей")
+            self.assertIsNotNone(m_crit_cancel)
+            self.assertEqual(m_crit_cancel.tier, "cancellation_critical")
+            self.assertIn("відбій", m_crit_cancel.matched_words)
+
+            # Standard cancellation: cancellation key without critical threat
+            m_std_cancel = store.match_text("Відбій тривоги у Києві та області")
+            self.assertIsNotNone(m_std_cancel)
+            self.assertEqual(m_std_cancel.tier, "cancellation_standard")
+
+            # Cancellation negated by cancellation stop-word
+            m_neg_cancel = store.match_text("Відбій по шахедах, але очікуємо пусків з моря")
+            self.assertIsNone(m_neg_cancel)
+
     def test_alert_formatting(self) -> None:
         import datetime
 
-        # Standard tier test
+        # Standard tier test (no top banner)
         std_job = AlertJob(
             source_chat_id=-1001234567890,
             source_chat_title="monitor",
@@ -246,7 +323,7 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(msg_text, expected_std)
 
-        # Critical tier test
+        # Critical tier test (‼️🚨‼️ banner)
         crit_job = AlertJob(
             source_chat_id=-1001234567890,
             source_chat_title="monitor",
@@ -264,6 +341,32 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
             "🔗 https://t.me/war_monitor/43889"
         )
         self.assertEqual(msg_text_crit, expected_crit)
+
+        # Cancellation critical test (🟡⚠️🟡 banner)
+        cancel_crit_job = AlertJob(
+            source_chat_id=-1001234567890,
+            source_chat_title="monitor",
+            source_chat_username="war_monitor",
+            message_id=43890,
+            message_date=datetime.datetime.now(datetime.timezone.utc),
+            message_text="Відбій загрози балістики!",
+            match=KeywordMatch(tier="cancellation_critical", matched_words=["відбій"]),
+        )
+        msg_cancel_crit = AlertDispatcher.format_alert(cancel_crit_job)
+        self.assertTrue(msg_cancel_crit.startswith("🟡⚠️🟡\n"))
+
+        # Cancellation standard test (🟢✅🟢 banner)
+        cancel_std_job = AlertJob(
+            source_chat_id=-1001234567890,
+            source_chat_title="monitor",
+            source_chat_username="war_monitor",
+            message_id=43891,
+            message_date=datetime.datetime.now(datetime.timezone.utc),
+            message_text="Відбій повітряної тривоги.",
+            match=KeywordMatch(tier="cancellation_standard", matched_words=["відбій"]),
+        )
+        msg_cancel_std = AlertDispatcher.format_alert(cancel_std_job)
+        self.assertTrue(msg_cancel_std.startswith("🟢✅🟢\n"))
 
 
 if __name__ == "__main__":
