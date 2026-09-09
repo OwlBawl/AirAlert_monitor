@@ -155,6 +155,7 @@ class ServiceMetrics:
     keywords_matched: int = 0
     alerts_forwarded: int = 0
     duplicates_filtered: int = 0
+    stale_messages_dropped: int = 0
     errors_caught: int = 0
     flood_wait_events: int = 0
 

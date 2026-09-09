@@ -386,6 +386,85 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
         msg_cancel_std = AlertDispatcher.format_alert(cancel_std_job)
         self.assertTrue(msg_cancel_std.startswith("🟢✅🟢\n"))
 
+    async def test_message_age_guard_drops_stale_messages(self) -> None:
+        import datetime
+        from unittest.mock import MagicMock
+        from src.parser import Channel, setup_parser_handlers
+        from src.safety import metrics
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            kw_file = Path(tmp_dir) / "keywords.json"
+            ch_file = Path(tmp_dir) / "channels.json"
+
+            with open(kw_file, "w", encoding="utf-8") as f:
+                json.dump({"critical": ["дарниц"], "standard": []}, f)
+            with open(ch_file, "w", encoding="utf-8") as f:
+                json.dump({"channels": ["@mon1tor_ua"]}, f)
+
+            store = DynamicStore(kw_file, ch_file)
+            await store.load_all()
+
+            config = AppConfig(
+                api_id=1,
+                api_hash="hash",
+                bot_token="token",
+                target_chat_id=-1001234567890,
+                user_session_name="user",
+                bot_session_name="bot",
+                keywords_file=kw_file,
+                channels_file=ch_file,
+                max_message_age_seconds=300.0,
+            )
+
+            dedup = DeduplicationCache(max_size=100, ttl_seconds=3600.0)
+            dispatcher = AlertDispatcher(bot_client=None, config=config)  # type: ignore[arg-type]
+
+            # Register parser handler on mock client
+            mock_client = MagicMock()
+            handlers = []
+            mock_client.on.side_effect = lambda event_type: (lambda fn: handlers.append(fn) or fn)
+            setup_parser_handlers(mock_client, config, store, dedup, dispatcher)
+            self.assertTrue(len(handlers) > 0)
+            handle_message = handlers[0]
+
+            now = datetime.datetime.now(datetime.timezone.utc)
+
+            # 1. Stale message from 4 hours ago (like 13:21 to 17:33) -> must be dropped
+            stale_event = MagicMock()
+            stale_event.chat_id = -1001111111111
+            stale_channel = Channel()
+            stale_channel.title = "ППО Радар"
+            stale_channel.username = "mon1tor_ua"
+            stale_event.chat = stale_channel
+            stale_event.message.id = 74102
+            stale_event.message.date = now - datetime.timedelta(hours=4)
+            stale_event.raw_text = "Ракета-дрон Герань-5 на Дарницю, ДВРЗ."
+            stale_event.message.message = stale_event.raw_text
+
+            initial_stale_count = metrics.stale_messages_dropped
+            initial_qsize = dispatcher.queue.qsize()
+
+            await handle_message(stale_event)
+
+            self.assertEqual(metrics.stale_messages_dropped, initial_stale_count + 1)
+            self.assertEqual(dispatcher.queue.qsize(), initial_qsize)
+
+            # 2. Fresh message from 30 seconds ago -> must be enqueued
+            fresh_event = MagicMock()
+            fresh_event.chat_id = -1001111111111
+            fresh_channel = Channel()
+            fresh_channel.title = "ППО Радар"
+            fresh_channel.username = "mon1tor_ua"
+            fresh_event.chat = fresh_channel
+            fresh_event.message.id = 74103
+            fresh_event.message.date = now - datetime.timedelta(seconds=30)
+            fresh_event.raw_text = "Нова ракета на Дарницю!"
+            fresh_event.message.message = fresh_event.raw_text
+
+            await handle_message(fresh_event)
+
+            self.assertEqual(dispatcher.queue.qsize(), initial_qsize + 1)
+
 
 if __name__ == "__main__":
     unittest.main()
