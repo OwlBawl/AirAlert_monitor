@@ -432,7 +432,7 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
             # 1. Stale message from 4 hours ago (like 13:21 to 17:33) -> must be dropped
             stale_event = MagicMock()
             stale_event.chat_id = -1001111111111
-            stale_channel = Channel()
+            stale_channel = MagicMock(spec=Channel)
             stale_channel.title = "ППО Радар"
             stale_channel.username = "mon1tor_ua"
             stale_event.chat = stale_channel
@@ -452,7 +452,7 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
             # 2. Fresh message from 30 seconds ago -> must be enqueued
             fresh_event = MagicMock()
             fresh_event.chat_id = -1001111111111
-            fresh_channel = Channel()
+            fresh_channel = MagicMock(spec=Channel)
             fresh_channel.title = "ППО Радар"
             fresh_channel.username = "mon1tor_ua"
             fresh_event.chat = fresh_channel
