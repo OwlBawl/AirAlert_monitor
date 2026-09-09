@@ -126,7 +126,7 @@ class AlertDispatcher:
 
     def enqueue(self, job: AlertJob) -> bool:
         """Add an alert job to the priority queue without blocking. Discards if overloaded."""
-        priority = 0 if job.match.tier == "critical" else 1
+        priority = 0 if job.match.tier in ("critical", "cancellation_critical") else 1
         try:
             self.queue.put_nowait((priority, self._seq, job))
             self._seq += 1
@@ -141,6 +141,8 @@ class AlertDispatcher:
         """Start the background dispatch worker."""
         if self._worker_task is None or self._worker_task.done():
             self._running = True
+            if self._target_entity is None and self.config.target_chat_id:
+                asyncio.create_task(self.resolve_target_entity())
             self._worker_task = asyncio.create_task(self._process_queue_loop())
             logger.info("Alert dispatcher worker started.")
 
@@ -209,6 +211,8 @@ class AlertDispatcher:
     async def _dispatch_single_alert(self, job: AlertJob) -> None:
         """Forward original message and deliver accompanying banner."""
         target = self.send_target()
+        if not target:
+            target = await self.resolve_target_entity()
         if not target:
             logger.warning("Target chat entity not resolved. Alert queued/dropped.")
             return

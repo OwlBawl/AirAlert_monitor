@@ -128,25 +128,43 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(purged, 2)
         self.assertEqual(await cache.size(), 0)
 
-    async def test_rate_limiter_burst_then_throttle(self) -> None:
+    async def test_rate_limiter_burst_and_spacing(self) -> None:
         limiter = AlertRateLimiter(
             min_interval_seconds=0.3,
             burst_capacity=3,
             standard_interval_seconds=1.0,
         )
 
-        start = time.monotonic()
+        # 1. First priority send is immediate
+        t0 = time.monotonic()
         await limiter.wait_turn(is_critical=True)
-        await limiter.wait_turn(is_critical=True)
-        await limiter.wait_turn(is_critical=True)
-        burst_elapsed = time.monotonic() - start
-        self.assertLess(burst_elapsed, 0.05)
+        self.assertLess(time.monotonic() - t0, 0.05)
 
-        fourth_start = time.monotonic()
+        # 2. Subsequent priority sends in burst are spaced by 0.3s
+        t1 = time.monotonic()
         await limiter.wait_turn(is_critical=True)
-        fourth_elapsed = time.monotonic() - fourth_start
-        self.assertGreaterEqual(fourth_elapsed, 0.25)
-        self.assertLess(fourth_elapsed, 0.6)
+        e1 = time.monotonic() - t1
+        self.assertGreaterEqual(e1, 0.25)
+        self.assertLess(e1, 0.45)
+
+        t2 = time.monotonic()
+        await limiter.wait_turn(is_critical=True)
+        e2 = time.monotonic() - t2
+        self.assertGreaterEqual(e2, 0.25)
+        self.assertLess(e2, 0.45)
+
+        # 3. Standard send: after 1.0s has passed, sent immediately
+        await asyncio.sleep(1.05)
+        t3 = time.monotonic()
+        await limiter.wait_turn(is_critical=False)
+        self.assertLess(time.monotonic() - t3, 0.05)
+
+        # 4. Rapid standard send: must wait remainder of 1.0s interval
+        t4 = time.monotonic()
+        await limiter.wait_turn(is_critical=False)
+        e4 = time.monotonic() - t4
+        self.assertGreaterEqual(e4, 0.90)
+        self.assertLess(e4, 1.20)
 
     def test_dispatcher_send_target_cache_and_fallback(self) -> None:
         config = AppConfig(

@@ -87,10 +87,12 @@ class DeduplicationCache:
 
 
 class AlertRateLimiter:
-    """Token-bucket limiter: up to burst_capacity instant critical sends, then min_interval refill.
+    """Token-bucket limiter: up to burst_capacity priority sends with min_interval spacing, then throttled.
 
-    Standard alerts also consume a token but must wait standard_interval_seconds since the
-    last send so non-critical chatter cannot drain the emergency burst reservoir.
+    Standard alerts enforce standard_interval_seconds since the last dispatched alert
+    (sent immediately if >= standard_interval_seconds has elapsed since last message).
+    Priority alerts can burst up to burst_capacity messages spaced by min_interval_seconds
+    (sent immediately if >= min_interval_seconds has elapsed since last message).
     """
 
     def __init__(
@@ -112,30 +114,33 @@ class AlertRateLimiter:
         now = time.monotonic()
         elapsed = now - self._last_refill
         self._last_refill = now
-        if elapsed <= 0 or self._min_interval <= 0:
-            self._tokens = self._burst_capacity
+        if elapsed <= 0:
             return
-        self._tokens = min(self._burst_capacity, self._tokens + elapsed / self._min_interval)
+        refill_rate = 1.0 / self._standard_interval if self._standard_interval > 0 else 10.0
+        self._tokens = min(self._burst_capacity, self._tokens + elapsed * refill_rate)
 
     def _wait_seconds(self, is_critical: bool) -> float:
         """Seconds until the next send is allowed (0 if ready now)."""
-        token_wait = 0.0
-        if self._tokens < 1.0:
-            token_wait = (1.0 - self._tokens) * self._min_interval
-        if is_critical:
-            return token_wait
         now = time.monotonic()
-        std_wait = max(0.0, self._standard_interval - (now - self._last_send))
-        return max(token_wait, std_wait)
+        elapsed_since_send = now - self._last_send
+        if is_critical:
+            interval_wait = max(0.0, self._min_interval - elapsed_since_send)
+            token_wait = 0.0
+            if self._tokens < 1.0:
+                token_wait = (1.0 - self._tokens) * self._standard_interval
+            return max(interval_wait, token_wait)
+        else:
+            return max(0.0, self._standard_interval - elapsed_since_send)
 
     async def wait_turn(self, is_critical: bool = False) -> None:
-        """Wait for a send slot. Critical uses burst tokens; standard also enforces pacing."""
+        """Wait for a send slot. Critical uses burst tokens with spacing; standard enforces pacing."""
         async with self._lock:
             while True:
                 self._refill()
                 wait_time = self._wait_seconds(is_critical)
-                if wait_time <= 0:
-                    self._tokens -= 1.0
+                if wait_time <= 0.001:
+                    if is_critical:
+                        self._tokens = max(0.0, self._tokens - 1.0)
                     self._last_send = time.monotonic()
                     return
                 await asyncio.sleep(wait_time)
