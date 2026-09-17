@@ -10,8 +10,32 @@ import datetime
 import logging
 from typing import Optional
 
-from telethon import TelegramClient, events
-from telethon.tl.types import Channel, Chat, User
+try:
+    from telethon import TelegramClient, events
+    from telethon.tl.types import Channel, Chat, User
+except ImportError:
+    class TelegramClient:  # type: ignore[no-redef]
+        pass
+
+    class events:  # type: ignore[no-redef]
+        class NewMessage:
+            class Event:
+                pass
+
+        class MessageEdited:
+            pass
+
+    class Channel:  # type: ignore[no-redef]
+        title: str = ""
+        username: Optional[str] = None
+
+    class Chat:  # type: ignore[no-redef]
+        title: str = ""
+
+    class User:  # type: ignore[no-redef]
+        first_name: str = ""
+        last_name: Optional[str] = None
+        username: Optional[str] = None
 
 from src.config import AppConfig
 from src.dispatcher import AlertDispatcher, AlertJob
@@ -67,26 +91,45 @@ def setup_parser_handlers(
 
             message_id = event.message.id
 
-            # 4. Deduplication & Anti-Spam Guard
+            # 4. Message Age Guard: Drop stale, historical, or old re-edited messages (> 5 mins)
+            message_date = event.message.date
+            if message_date:
+                now_utc = datetime.datetime.now(datetime.timezone.utc)
+                if message_date.tzinfo is None:
+                    message_date = message_date.replace(tzinfo=datetime.timezone.utc)
+                age_seconds = (now_utc - message_date).total_seconds()
+                if age_seconds > config.max_message_age_seconds:
+                    metrics.stale_messages_dropped += 1
+                    logger.info(
+                        "Skipping stale message %s from '%s' (age: %.1fs > max %.1fs)",
+                        message_id,
+                        chat_title,
+                        age_seconds,
+                        config.max_message_age_seconds,
+                    )
+                    return
+            else:
+                message_date = datetime.datetime.now(datetime.timezone.utc)
+
+            # 5. Deduplication & Anti-Spam Guard
             is_duplicate = await dedup.check_and_add(chat_id, message_id)
             if is_duplicate:
                 metrics.duplicates_filtered += 1
                 return
 
-            # 5. Extract text
+            # 6. Extract text
             raw_text = event.raw_text or event.message.message or ""
             if not raw_text.strip():
                 return
 
             metrics.messages_scanned += 1
 
-            # 6. Keyword matching (checks critical tier first, then standard)
+            # 7. Keyword matching (checks critical tier first, then standard)
             match_result = store.match_text(raw_text)
             if not match_result:
                 return
 
-            # 7. Construct AlertJob and enqueue for priority dispatch
-            message_date = event.message.date or datetime.datetime.now(datetime.timezone.utc)
+            # 8. Construct AlertJob and enqueue for priority dispatch
             job = AlertJob(
                 source_chat_id=chat_id,
                 source_chat_title=chat_title,

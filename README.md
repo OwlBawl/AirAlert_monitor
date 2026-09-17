@@ -124,21 +124,43 @@ To monitor channels, Telethon requires one-time phone authentication with your T
 
 ## Bot Commands (In Target Chat)
 
-Any member inside the destination alert chat can manage the monitoring rules in real-time:
+Any administrator inside the destination alert chat or user in private DM can manage the monitoring rules in real-time:
 
 | Command | Description |
 | :--- | :--- |
-| `/help` | Show command reference |
+| `/help` | Show complete command reference and keyword syntax |
 | `/id` | Display current chat ID |
-| `/add_key [word]` | Add keyword to standard tier (silent alert) |
-| `/del_key [word]` | Remove keyword from standard tier |
-| `/add_critical [word]` | Add keyword to **CRITICAL** tier (loud notification 🚨) |
-| `/del_critical [word]` | Remove keyword from critical tier |
-| `/list_keys` | View all active critical and standard keywords |
+| `/add_critical <word>` | Add to **CRITICAL** tier (loud banner `‼️🚨‼️` + sound) |
+| `/del_critical <word>` | Remove keyword from critical tier |
+| `/add_key <word>` | Add to **Standard** tier (normal notification + sound) |
+| `/del_key <word>` | Remove keyword from standard tier |
+| `/add_cancel <word>` | Add to **Cancellation** tier (`🟡⚠️🟡` / `🟢✅🟢` silent banner) |
+| `/del_cancel <word>` | Remove keyword from cancellation tier |
+| `/list_keys` | View all active critical, standard, and cancellation words |
 | `/add_channel [@user/ID]` | Add channel or group to monitor |
 | `/del_channel [@user/ID]` | Remove channel or group from monitoring |
 | `/list_channels` | List all channels currently monitored |
 | `/status` | View uptime, messages scanned, alerts dispatched, queue size, and error counters |
+
+### Keyword Matching Syntax & Formats
+
+The parser supports three powerful keyword matching modes across all tiers (`critical`, `standard`, `cancellation`):
+
+1. **Stem Matching (`word`)**:
+   Matches word beginnings and all grammatical inflections/suffixes.
+   - Example: `/add_critical баліст` matches *балістика*, *балістичних*, *балістикою*, *балістичні*.
+   - Multi-word keys: `/add_critical крилат ракет` requires all tokens to be present anywhere in the message.
+
+2. **Strict Standalone Word Matching (`[word]`)**:
+   Enclosing a keyword in square brackets `[...]` enforces strict boundary matching on both sides `(?<!\w)word(?!\w)`.
+   - Example: `/add_critical [бр]` matches **only** the standalone word *бр*, and will **not** trigger on *зброя*, *добра*, or *обрахунок*.
+   - Strict phrase: `/add_key [вихід київ]` matches the exact contiguous phrase *вихід київ*.
+
+3. **Stop-Words & Negative Filtering (`-word` or `-[word]`)**:
+   Prefixing any keyword with a hyphen `-` registers it as an exclusion rule in that tier. If any active stop-word is present in the text, the alert is suppressed immediately.
+   - Example: `/add_critical -тренування` blocks alerts if *тренування* is mentioned.
+   - Example: `/add_key -каб` suppresses standard alerts containing *каб*.
+   - Example: `/add_cancel -очікуємо` suppresses cancellation alerts if *очікуємо* is present.
 
 ---
 

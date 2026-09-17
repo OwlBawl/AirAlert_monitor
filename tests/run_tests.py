@@ -128,25 +128,43 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(purged, 2)
         self.assertEqual(await cache.size(), 0)
 
-    async def test_rate_limiter_burst_then_throttle(self) -> None:
+    async def test_rate_limiter_burst_and_spacing(self) -> None:
         limiter = AlertRateLimiter(
             min_interval_seconds=0.3,
             burst_capacity=3,
             standard_interval_seconds=1.0,
         )
 
-        start = time.monotonic()
+        # 1. First priority send is immediate
+        t0 = time.monotonic()
         await limiter.wait_turn(is_critical=True)
-        await limiter.wait_turn(is_critical=True)
-        await limiter.wait_turn(is_critical=True)
-        burst_elapsed = time.monotonic() - start
-        self.assertLess(burst_elapsed, 0.05)
+        self.assertLess(time.monotonic() - t0, 0.05)
 
-        fourth_start = time.monotonic()
+        # 2. Subsequent priority sends in burst are spaced by 0.3s
+        t1 = time.monotonic()
         await limiter.wait_turn(is_critical=True)
-        fourth_elapsed = time.monotonic() - fourth_start
-        self.assertGreaterEqual(fourth_elapsed, 0.25)
-        self.assertLess(fourth_elapsed, 0.6)
+        e1 = time.monotonic() - t1
+        self.assertGreaterEqual(e1, 0.25)
+        self.assertLess(e1, 0.45)
+
+        t2 = time.monotonic()
+        await limiter.wait_turn(is_critical=True)
+        e2 = time.monotonic() - t2
+        self.assertGreaterEqual(e2, 0.25)
+        self.assertLess(e2, 0.45)
+
+        # 3. Standard send: after 1.0s has passed, sent immediately
+        await asyncio.sleep(1.05)
+        t3 = time.monotonic()
+        await limiter.wait_turn(is_critical=False)
+        self.assertLess(time.monotonic() - t3, 0.05)
+
+        # 4. Rapid standard send: must wait remainder of 1.0s interval
+        t4 = time.monotonic()
+        await limiter.wait_turn(is_critical=False)
+        e4 = time.monotonic() - t4
+        self.assertGreaterEqual(e4, 0.90)
+        self.assertLess(e4, 1.20)
 
     def test_dispatcher_send_target_cache_and_fallback(self) -> None:
         config = AppConfig(
@@ -211,10 +229,16 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(match)
             self.assertEqual(match.tier, "critical")
 
-            # Remove keyword
-            self.assertTrue(await store.remove_keyword("кинджал"))
-            self.assertFalse(await store.remove_keyword("nonexistent"))
+            # Strict removal by tier
+            self.assertFalse(await store.remove_keyword("кинджал", tier="standard"))
+            self.assertTrue(await store.remove_keyword("кинджал", tier="critical"))
+            self.assertFalse(await store.remove_keyword("nonexistent", tier="critical"))
             self.assertIsNone(store.match_text("Запуск кинджал!"))
+
+            # Add / remove negative keyword
+            self.assertTrue(await store.add_keyword("-каб", tier="standard"))
+            self.assertFalse(await store.remove_keyword("-каб", tier="critical"))
+            self.assertTrue(await store.remove_keyword("-каб", tier="standard"))
 
             # Add / remove channel
             self.assertTrue(await store.add_channel("@my_channel"))
@@ -225,10 +249,81 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await store.remove_channel("@my_channel"))
             self.assertFalse(store.is_channel_monitored(999, "my_channel"))
 
+    async def test_negative_keywords_blocking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            kw_file = Path(tmp_dir) / "keywords.json"
+            ch_file = Path(tmp_dir) / "channels.json"
+
+            kw_data = {
+                "critical": ["крилат"],
+                "critical_negative": ["навчання"],
+                "standard": ["пуск"],
+                "standard_negative": ["каб"],
+                "cancellation": [],
+                "cancellation_negative": [],
+            }
+            with open(kw_file, "w", encoding="utf-8") as f:
+                json.dump(kw_data, f)
+
+            store = DynamicStore(kw_file, ch_file)
+            await store.load_all()
+
+            # Positive critical match
+            m1 = store.match_text("Пуски крилатих ракет з бортів Ту-95")
+            self.assertIsNotNone(m1)
+            self.assertEqual(m1.tier, "critical")
+
+            # Blocked critical match by negative stop-word
+            m2 = store.match_text("Пуски крилатих ракет (навчання екіпажів)")
+            self.assertIsNone(m2)
+
+            # Positive standard match
+            m3 = store.match_text("Зафіксовано пуск невідомої цілі")
+            self.assertIsNotNone(m3)
+            self.assertEqual(m3.tier, "standard")
+
+            # Blocked standard match by negative stop-word
+            m4 = store.match_text("Пуски КАБ у напрямку Харкова")
+            self.assertIsNone(m4)
+
+    async def test_cancellation_tier_and_negation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            kw_file = Path(tmp_dir) / "keywords.json"
+            ch_file = Path(tmp_dir) / "channels.json"
+
+            kw_data = {
+                "critical": ["балісти"],
+                "critical_negative": [],
+                "standard": ["шахед"],
+                "standard_negative": [],
+                "cancellation": ["відбій", "чисто"],
+                "cancellation_negative": ["очікуємо"],
+            }
+            with open(kw_file, "w", encoding="utf-8") as f:
+                json.dump(kw_data, f)
+
+            store = DynamicStore(kw_file, ch_file)
+            await store.load_all()
+
+            # Critical cancellation: cancellation key + critical threat mentioned
+            m_crit_cancel = store.match_text("Відбій загрози балістики для центральних областей")
+            self.assertIsNotNone(m_crit_cancel)
+            self.assertEqual(m_crit_cancel.tier, "cancellation_critical")
+            self.assertIn("відбій", m_crit_cancel.matched_words)
+
+            # Standard cancellation: cancellation key without critical threat
+            m_std_cancel = store.match_text("Відбій тривоги у Києві та області")
+            self.assertIsNotNone(m_std_cancel)
+            self.assertEqual(m_std_cancel.tier, "cancellation_standard")
+
+            # Cancellation negated by cancellation stop-word
+            m_neg_cancel = store.match_text("Відбій по шахедах, але очікуємо пусків з моря")
+            self.assertIsNone(m_neg_cancel)
+
     def test_alert_formatting(self) -> None:
         import datetime
 
-        # Standard tier test
+        # Standard tier test (no top banner)
         std_job = AlertJob(
             source_chat_id=-1001234567890,
             source_chat_title="monitor",
@@ -246,7 +341,7 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(msg_text, expected_std)
 
-        # Critical tier test
+        # Critical tier test (‼️🚨‼️ banner)
         crit_job = AlertJob(
             source_chat_id=-1001234567890,
             source_chat_title="monitor",
@@ -264,6 +359,111 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
             "🔗 https://t.me/war_monitor/43889"
         )
         self.assertEqual(msg_text_crit, expected_crit)
+
+        # Cancellation critical test (🟡⚠️🟡 banner)
+        cancel_crit_job = AlertJob(
+            source_chat_id=-1001234567890,
+            source_chat_title="monitor",
+            source_chat_username="war_monitor",
+            message_id=43890,
+            message_date=datetime.datetime.now(datetime.timezone.utc),
+            message_text="Відбій загрози балістики!",
+            match=KeywordMatch(tier="cancellation_critical", matched_words=["відбій"]),
+        )
+        msg_cancel_crit = AlertDispatcher.format_alert(cancel_crit_job)
+        self.assertTrue(msg_cancel_crit.startswith("🟡⚠️🟡\n"))
+
+        # Cancellation standard test (🟢✅🟢 banner)
+        cancel_std_job = AlertJob(
+            source_chat_id=-1001234567890,
+            source_chat_title="monitor",
+            source_chat_username="war_monitor",
+            message_id=43891,
+            message_date=datetime.datetime.now(datetime.timezone.utc),
+            message_text="Відбій повітряної тривоги.",
+            match=KeywordMatch(tier="cancellation_standard", matched_words=["відбій"]),
+        )
+        msg_cancel_std = AlertDispatcher.format_alert(cancel_std_job)
+        self.assertTrue(msg_cancel_std.startswith("🟢✅🟢\n"))
+
+    async def test_message_age_guard_drops_stale_messages(self) -> None:
+        import datetime
+        from unittest.mock import MagicMock
+        from src.parser import Channel, setup_parser_handlers
+        from src.safety import metrics
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            kw_file = Path(tmp_dir) / "keywords.json"
+            ch_file = Path(tmp_dir) / "channels.json"
+
+            with open(kw_file, "w", encoding="utf-8") as f:
+                json.dump({"critical": ["дарниц"], "standard": []}, f)
+            with open(ch_file, "w", encoding="utf-8") as f:
+                json.dump({"channels": ["@mon1tor_ua"]}, f)
+
+            store = DynamicStore(kw_file, ch_file)
+            await store.load_all()
+
+            config = AppConfig(
+                api_id=1,
+                api_hash="hash",
+                bot_token="token",
+                target_chat_id=-1001234567890,
+                user_session_name="user",
+                bot_session_name="bot",
+                keywords_file=kw_file,
+                channels_file=ch_file,
+                max_message_age_seconds=300.0,
+            )
+
+            dedup = DeduplicationCache(max_size=100, ttl_seconds=3600.0)
+            dispatcher = AlertDispatcher(bot_client=None, config=config)  # type: ignore[arg-type]
+
+            # Register parser handler on mock client
+            mock_client = MagicMock()
+            handlers = []
+            mock_client.on.side_effect = lambda event_type: (lambda fn: handlers.append(fn) or fn)
+            setup_parser_handlers(mock_client, config, store, dedup, dispatcher)
+            self.assertTrue(len(handlers) > 0)
+            handle_message = handlers[0]
+
+            now = datetime.datetime.now(datetime.timezone.utc)
+
+            # 1. Stale message from 4 hours ago (like 13:21 to 17:33) -> must be dropped
+            stale_event = MagicMock()
+            stale_event.chat_id = -1001111111111
+            stale_channel = MagicMock(spec=Channel)
+            stale_channel.title = "ППО Радар"
+            stale_channel.username = "mon1tor_ua"
+            stale_event.chat = stale_channel
+            stale_event.message.id = 74102
+            stale_event.message.date = now - datetime.timedelta(hours=4)
+            stale_event.raw_text = "Ракета-дрон Герань-5 на Дарницю, ДВРЗ."
+            stale_event.message.message = stale_event.raw_text
+
+            initial_stale_count = metrics.stale_messages_dropped
+            initial_qsize = dispatcher.queue.qsize()
+
+            await handle_message(stale_event)
+
+            self.assertEqual(metrics.stale_messages_dropped, initial_stale_count + 1)
+            self.assertEqual(dispatcher.queue.qsize(), initial_qsize)
+
+            # 2. Fresh message from 30 seconds ago -> must be enqueued
+            fresh_event = MagicMock()
+            fresh_event.chat_id = -1001111111111
+            fresh_channel = MagicMock(spec=Channel)
+            fresh_channel.title = "ППО Радар"
+            fresh_channel.username = "mon1tor_ua"
+            fresh_event.chat = fresh_channel
+            fresh_event.message.id = 74103
+            fresh_event.message.date = now - datetime.timedelta(seconds=30)
+            fresh_event.raw_text = "Нова ракета на Дарницю!"
+            fresh_event.message.message = fresh_event.raw_text
+
+            await handle_message(fresh_event)
+
+            self.assertEqual(dispatcher.queue.qsize(), initial_qsize + 1)
 
 
 if __name__ == "__main__":

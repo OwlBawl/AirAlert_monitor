@@ -5,9 +5,22 @@
     "тривога",
     "[бр]"
   ],
+  "critical_negative": [
+    "тренування"
+  ],
   "standard": [
     "шахед",
     "дрон",
     "вибух"
+  ],
+  "standard_negative": [
+    "каб"
+  ],
+  "cancellation": [
+    "відбій",
+    "чисто"
+  ],
+  "cancellation_negative": [
+    "очікуємо"
   ]
 }

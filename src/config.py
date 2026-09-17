@@ -132,6 +132,7 @@ def _prompt_and_save_missing_config() -> None:
         f"ALERT_INTERVAL_SECONDS={os.getenv('ALERT_INTERVAL_SECONDS', '1.0')}",
         f"API_TIMEOUT_SECONDS={os.getenv('API_TIMEOUT_SECONDS', '10.0')}",
         f"HEARTBEAT_INTERVAL_SECONDS={os.getenv('HEARTBEAT_INTERVAL_SECONDS', '30.0')}",
+        f"MAX_MESSAGE_AGE_SECONDS={os.getenv('MAX_MESSAGE_AGE_SECONDS', '300.0')}",
         f"DEDUP_TTL_SECONDS={os.getenv('DEDUP_TTL_SECONDS', '3600')}",
         f"DEDUP_MAX_SIZE={os.getenv('DEDUP_MAX_SIZE', '500')}",
         f"QUEUE_MAX_SIZE={os.getenv('QUEUE_MAX_SIZE', '100')}",
@@ -166,14 +167,15 @@ class AppConfig:
     channels_file: Path
 
     # Safety, Memory and Timing Settings
-    alert_interval_seconds: float
-    api_timeout_seconds: float
-    heartbeat_interval_seconds: float
-    dedup_ttl_seconds: float
-    dedup_max_size: int
-    queue_max_size: int
-    log_max_bytes: int
-    log_backup_count: int
+    alert_interval_seconds: float = 1.0
+    api_timeout_seconds: float = 10.0
+    heartbeat_interval_seconds: float = 30.0
+    max_message_age_seconds: float = 300.0
+    dedup_ttl_seconds: float = 3600.0
+    dedup_max_size: int = 500
+    queue_max_size: int = 100
+    log_max_bytes: int = 10 * 1024 * 1024
+    log_backup_count: int = 5
 
     @classmethod
     def load(cls) -> AppConfig:
@@ -204,6 +206,7 @@ class AppConfig:
         alert_interval_seconds = _get_env_float("ALERT_INTERVAL_SECONDS", 1.0)
         api_timeout_seconds = _get_env_float("API_TIMEOUT_SECONDS", 10.0)
         heartbeat_interval_seconds = _get_env_float("HEARTBEAT_INTERVAL_SECONDS", 30.0)
+        max_message_age_seconds = _get_env_float("MAX_MESSAGE_AGE_SECONDS", 300.0)
         dedup_ttl_seconds = _get_env_float("DEDUP_TTL_SECONDS", 3600.0)
         dedup_max_size = _get_env_int("DEDUP_MAX_SIZE", 500)
         queue_max_size = _get_env_int("QUEUE_MAX_SIZE", 100)
@@ -222,6 +225,7 @@ class AppConfig:
             alert_interval_seconds=alert_interval_seconds,
             api_timeout_seconds=api_timeout_seconds,
             heartbeat_interval_seconds=heartbeat_interval_seconds,
+            max_message_age_seconds=max_message_age_seconds,
             dedup_ttl_seconds=dedup_ttl_seconds,
             dedup_max_size=dedup_max_size,
             queue_max_size=queue_max_size,
