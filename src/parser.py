@@ -1,6 +1,6 @@
 """Channel parser listener module.
 
-Listens on the Telethon User client for incoming channel messages, applies deduplication
+Listens on the Telethon User client for incoming channel messages, applies keyword debounce
 and loop protection, performs keyword matching, and feeds the alert queue.
 """
 

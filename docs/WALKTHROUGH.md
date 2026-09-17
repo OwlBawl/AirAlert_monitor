@@ -29,8 +29,8 @@ Ran 7 tests in 1.389s
 OK
 ```
 - ✅ Word boundary & tier prioritization (critical matched before standard; no false sub-string triggers).
-- ✅ Deduplication cache (same post in same chat rejected within TTL).
-- ✅ Rate-limiter pacing (enforces >= 1.0s between dispatches).
+- ✅ Keyword debounce cache (keyword cooldown suppression, edit re-triggering, release on failed dispatch).
+- ✅ Rate-limiter pacing (burst pacing with minimum intervals).
 - ✅ Safe API call timeout escape (cancelled hung call promptly without freezing).
 - ✅ Dynamic store hot additions/removals and atomic JSON writing.
 

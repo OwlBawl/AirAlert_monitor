@@ -106,7 +106,7 @@ class AirAlertService:
                     gc_collected = gc.collect()
                     qsize = self.dispatcher.queue.qsize() if self.dispatcher else 0
                     logger.info(
-                        "Health status: uptime=%s, scanned=%d, matched=%d, forwarded=%d, queue=%d, dedup_size=%d (gc_collected=%d)",
+                        "Health status: uptime=%s, scanned=%d, matched=%d, forwarded=%d, queue=%d, debounce_size=%d (gc_collected=%d)",
                         metrics.get_uptime_str(),
                         metrics.messages_scanned,
                         metrics.keywords_matched,

@@ -1,6 +1,6 @@
 """Safety, rate-limiting, and hang-prevention module for AirAlert Telethon monitor.
 
-Provides deduplication caching, burst-aware alert pacing, and timeout guards.
+Provides keyword debounce caching, burst-aware alert pacing, and timeout guards.
 """
 
 from __future__ import annotations
