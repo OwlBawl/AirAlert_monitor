@@ -20,7 +20,7 @@ from src.bot_manager import register_admin_bot_commands, setup_bot_handlers
 from src.config import config
 from src.dispatcher import AlertDispatcher
 from src.parser import setup_parser_handlers
-from src.safety import DeduplicationCache, metrics, safe_api_call
+from src.safety import KeywordDebounceCache, metrics, safe_api_call
 from src.storage import DynamicStore
 
 # Configure logging with strict file size cap and automatic rotation (max 10MB x 5 backups)
@@ -49,9 +49,9 @@ class AirAlertService:
             keywords_file=config.keywords_file,
             channels_file=config.channels_file,
         )
-        self.dedup = DeduplicationCache(
-            max_size=config.dedup_max_size,
-            ttl_seconds=config.dedup_ttl_seconds,
+        self.debounce_cache = KeywordDebounceCache(
+            alert_ttl_seconds=config.keyword_cooldown_alert_seconds,
+            cancel_ttl_seconds=config.keyword_cooldown_cancel_seconds,
         )
 
         # Clients
@@ -96,10 +96,10 @@ class AirAlertService:
                         action_name="Bot Client Reconnect",
                     )
 
-                # Active memory reclamation: sweep expired message IDs from cache
-                purged_count = await self.dedup.clean_expired()
+                # Active memory reclamation: sweep expired keywords from cache
+                purged_count = await self.debounce_cache.clean_expired()
                 if purged_count > 0:
-                    logger.debug("Watchdog: Evicted %d expired message IDs from dedup cache.", purged_count)
+                    logger.debug("Watchdog: Evicted %d expired keywords from debounce cache.", purged_count)
 
                 # Periodic deep health report & GC sweep every 10 iterations (~5 minutes)
                 if iteration % 10 == 0:
@@ -112,7 +112,7 @@ class AirAlertService:
                         metrics.keywords_matched,
                         metrics.alerts_forwarded,
                         qsize,
-                        await self.dedup.size(),
+                        await self.debounce_cache.size(),
                         gc_collected,
                     )
             except asyncio.CancelledError:
@@ -152,7 +152,9 @@ class AirAlertService:
         )
 
         # 5. Start Alert Dispatcher (with user_client for native channel forwards)
-        self.dispatcher = AlertDispatcher(self.bot_client, self.config, user_client=self.user_client)
+        self.dispatcher = AlertDispatcher(
+            self.bot_client, self.config, debounce_cache=self.debounce_cache, user_client=self.user_client
+        )
 
         if self.config.target_chat_id:
             try:
@@ -180,7 +182,7 @@ class AirAlertService:
         setup_bot_handlers(self.bot_client, self.config, self.store, self.dispatcher)
 
         # 7. Attach Channel intake listener to User client
-        setup_parser_handlers(self.user_client, self.config, self.store, self.dedup, self.dispatcher)
+        setup_parser_handlers(self.user_client, self.config, self.store, self.debounce_cache, self.dispatcher)
 
         # 7. Start watchdog heartbeat
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())

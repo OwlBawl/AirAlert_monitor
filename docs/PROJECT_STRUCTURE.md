@@ -41,7 +41,7 @@ AirAlert_monitor/
 ├── src/                    # Application source code
 │   ├── __init__.py
 │   ├── config.py           # Environment & AppConfig schema
-│   ├── safety.py           # DeduplicationCache, AlertRateLimiter, safe_api_call
+│   ├── safety.py           # KeywordDebounceCache, AlertRateLimiter, safe_api_call
 │   ├── storage.py          # DynamicStore, KeywordMatch, atomic JSON writes
 │   ├── dispatcher.py       # AlertDispatcher, AlertJob queue consumer
 │   ├── parser.py           # User client listener, filtering & intake
@@ -83,7 +83,7 @@ Provides typed, validated configuration loading with fallbacks.
 - **`_get_env_float(key: str, default: float) -> float`**:
   Safe parser for floating-point environment variables.
 - **`class AppConfig`** (Frozen dataclass):
-  - Attributes: `api_id`, `api_hash`, `bot_token`, `target_chat_id`, `user_session_name`, `bot_session_name`, `keywords_file`, `channels_file`, `alert_interval_seconds`, `api_timeout_seconds`, `heartbeat_interval_seconds`, `dedup_ttl_seconds`, `dedup_max_size` (default: 500), `queue_max_size` (default: 100), `log_max_bytes` (default: 10MB), `log_backup_count` (default: 5).
+  - Attributes: `api_id`, `api_hash`, `bot_token`, `target_chat_id`, `user_session_name`, `bot_session_name`, `keywords_file`, `channels_file`, `alert_interval_seconds`, `api_timeout_seconds`, `heartbeat_interval_seconds`, `keyword_cooldown_alert_seconds`, `keyword_cooldown_cancel_seconds`, `alert_burst_min_interval_seconds`, `alert_burst_capacity`, `max_flood_wait_seconds`, `queue_max_size` (default: 100), `log_max_bytes` (default: 10MB), `log_backup_count` (default: 5).
   - `load() -> AppConfig`: Factory method constructing configuration from `.env` and environment variables.
 - **`config: AppConfig`**:
   Global singleton configuration instance.
@@ -93,10 +93,12 @@ Provides typed, validated configuration loading with fallbacks.
 ### `src/safety.py`
 Protects the service against hangs, loops, duplicate notifications, and Telegram API flood limits.
 
-- **`class DeduplicationCache`**:
-  - `__init__(max_size: int = 500, ttl_seconds: float = 3600.0)`: Initializes in-memory `OrderedDict` with an `asyncio.Lock`.
-  - `check_and_add(chat_id: int, message_id: int) -> bool`: Checks if `(chat_id, message_id)` was processed within TTL. Returns `True` if duplicate, `False` if newly registered. Evicts oldest expired items or oldest item when max size (500) is reached.
-  - `clean_expired() -> int`: Active memory sweep executed on watchdog cycles to proactively evict expired message IDs.
+- **`class KeywordDebounceCache`**:
+  - `__init__(alert_ttl_seconds: float = 60.0, cancel_ttl_seconds: float = 300.0)`: Initializes in-memory `OrderedDict` with an `asyncio.Lock`.
+  - `filter_uncooled(words, tier) -> Tuple`: Returns only keywords that are not currently in cooldown.
+  - `record(words) -> None`: Records keywords as recently alerted to start their cooldown.
+  - `release(words) -> None`: Removes keywords from cooldown (e.g. if dispatch failed).
+  - `clean_expired() -> int`: Active memory sweep executed on watchdog cycles to proactively evict expired keywords.
   - `size() -> int`: Returns current cached entry count.
 - **`class AlertRateLimiter`**:
   - `__init__(min_interval_seconds: float = 1.0)`: Enforces minimum elapsed time between consecutive alerts (default: 1.0 second).

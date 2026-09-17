@@ -1,6 +1,6 @@
 ---
 name: Banners and debounce
-overview: Banners, parser allowlist-first, keyword cooldown after match (record after send), drop message-id dedup so edits can fire, and three-level send queue priority.
+overview: Banners, parser allowlist-first, keyword cooldown (record on enqueue, release on failure), drop message-id dedup so edits can fire, and three-level send queue priority.
 todos:
   - id: banners
     content: Update format_alert banners + tests + README cancel note
@@ -9,10 +9,10 @@ todos:
     content: Allowlist first, then loop guard; no message-id dedup on the live path
     status: pending
   - id: debounce-cache
-    content: Add KeywordDebounceCache (60s alert / 300s cancel) and config constants
+    content: Add KeywordDebounceCache (60s alert / 300s cancel) with filter, record, release, and clean_expired methods
     status: pending
   - id: parser-wire
-    content: After match_text, filter cooled keys then enqueue; record cooldown  after enqueu
+    content: Filter cooled keys in parser before enqueue; record cooldown immediately on successful enqueue
     status: pending
   - id: queue-priority
     content: Queue priority 0 critical, 1 standard, 2 both cancellation tiers
@@ -70,7 +70,7 @@ We send matched key only once while cooldown time (TTL).
 
 And because we now use cooldown by keyword - we dont need dedup. So if message was mistyped and then fixed to match the key - it can be sent now (if other conditions are met like age and so on, and if it pass our cooldown logics ofcourse by default)
 
-**Record** key to cooldown just after enqueue. So that keys won't be sent few times because of sending lag.
+**Record** key to cooldown just after successful **enqueue**. So that duplicate incoming messages from other channels won't queue up multiple identical alerts while the first one is waiting to send.
 
 **Filter** after `match_text`, **before** enqueue: cooling keys never enter the send queue untill their cooldown finishes.
 
@@ -80,17 +80,27 @@ Add `KeywordDebounceCache` in `[src/safety.py](src/safety.py)`:
 
 - Key: normalized string from `KeywordMatch.matched_words` (the stored phrase, e.g. `відбій` or `повітряна тривога`).
 - Scope: **global** (any channel). Same key in another channel is ignored until TTL ends.
-- TTL: **60s** for `critical` and `standard`; **300s** for `cancellation_critical` and `cancellation_standard`. (set in .env file, Also check if other wait timers in app could be configured via .env)
+- TTL & Timers (all configured in `config/.env` via `[src/config.py](src/config.py)`):
+  - `KEYWORD_COOLDOWN_ALERT_SECONDS` (default: `60.0` for `critical` and `standard`)
+  - `KEYWORD_COOLDOWN_CANCEL_SECONDS` (default: `300.0` for `cancellation_critical` and `cancellation_standard`)
+  - `ALERT_INTERVAL_SECONDS` (default: `1.0` pacing for standard/cancellation)
+  - `ALERT_BURST_MIN_INTERVAL_SECONDS` (default: `0.3` spacing for critical burst)
+  - `ALERT_BURST_CAPACITY` (default: `3` tokens)
+  - `API_TIMEOUT_SECONDS` (default: `10.0`)
+  - `HEARTBEAT_INTERVAL_SECONDS` (default: `30.0`)
+  - `MAX_MESSAGE_AGE_SECONDS` (default: `300.0`)
+  - `MAX_FLOOD_WAIT_SECONDS` (default: `60.0`)
 
-Parser (`[src/parser.py](src/parser.py)`) **after `match_text`, before enqueue** (Task 1):
+Parser (`[src/parser.py](src/parser.py)`) **after `match_text`, before enqueue**:
 
 1. Keep only matched words that are **not** in cooldown for that tier family.
 2. If none remain, return (do not enqueue).
-3. Enqueue with the filtered `matched_words`. Do **not** record cooldown here.
+3. Enqueue with the filtered `matched_words`.
+4. If `enqueue` is successful, record the `matched_words` in cooldown immediately.
 
 If a message matches `ракета` (already sent 10s ago) and `дрон` (new), only `дрон` is sent and only `дрон` starts a new 60s window. If every matched key is cooling down, the message is dropped. Each key has it's own nonblocking cooldown timer.
 
-Construct `KeywordDebounceCache` in `[main.py](main.py)`; pass it into parser (filter) and dispatcher (record after send).
+Construct `KeywordDebounceCache` in `[main.py](main.py)`; pass it into parser (for filtering and recording) and dispatcher (for releasing on failure).
 
 ## Tests
 
@@ -101,6 +111,6 @@ Add unit tests in `[tests/test_safety_and_matching.py](tests/test_safety_and_mat
 - Different keys are independent.
 - Mixed match: cooled key dropped, new key still enqueued.
 - Stop-word (`-word`) suppression never records cooldown.
-- Failed/dropped dispatch does not record cooldown; the same key can still send afterward.
+- Failed/dropped dispatch releases the cooldown; the same key can still send afterward.
 - Same `message_id` after an edit can enqueue if the text now matches and keys are not in cooldown (no message-id dedup).
 - Queue still drops only when size == `queue_max_size`.

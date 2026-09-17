@@ -10,7 +10,7 @@ import logging
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional, Set, Tuple, TypeVar
+from typing import Any, Awaitable, Callable, Optional, Set, Tuple, TypeVar, Iterable
 
 try:
     from telethon.errors import FloodWaitError
@@ -23,54 +23,63 @@ logger = logging.getLogger("AirAlert.Safety")
 T = TypeVar("T")
 
 
-class DeduplicationCache:
-    """Thread-safe LRU & TTL cache to prevent duplicate alerts for (chat_id, message_id)."""
+class KeywordDebounceCache:
+    """Thread-safe TTL cache to prevent duplicate alerts for the same keyword across all channels."""
 
-    def __init__(self, max_size: int = 5000, ttl_seconds: float = 3600.0) -> None:
-        self._max_size = max_size
-        self._ttl_seconds = ttl_seconds
-        # Stores (chat_id, message_id) -> timestamp
-        self._cache: OrderedDict[Tuple[int, int], float] = OrderedDict()
+    def __init__(self, alert_ttl_seconds: float = 60.0, cancel_ttl_seconds: float = 300.0) -> None:
+        self._alert_ttl = alert_ttl_seconds
+        self._cancel_ttl = cancel_ttl_seconds
+        # Stores normalized_word -> timestamp
+        self._cache: OrderedDict[str, float] = OrderedDict()
         self._lock = asyncio.Lock()
 
-    async def check_and_add(self, chat_id: int, message_id: int) -> bool:
-        """Check if message is a duplicate. Returns True if already exists (duplicate), False if newly added."""
-        key = (chat_id, message_id)
+    def _get_ttl(self, tier: str) -> float:
+        if tier.startswith("cancellation"):
+            return self._cancel_ttl
+        return self._alert_ttl
+
+    async def filter_uncooled(self, words: Iterable[str], tier: str) -> Tuple[str, ...]:
+        """Return only the words that are not currently in cooldown."""
         now = time.monotonic()
+        ttl = self._get_ttl(tier)
+        uncooled: list[str] = []
 
         async with self._lock:
-            # Check existing entry
-            if key in self._cache:
-                timestamp = self._cache[key]
-                if now - timestamp < self._ttl_seconds:
-                    # Move to end as recently seen
-                    self._cache.move_to_end(key)
-                    return True
-                else:
-                    # Expired entry, remove it
-                    del self._cache[key]
-
-            # Clean expired items if cache grows large
-            if len(self._cache) >= self._max_size:
-                cutoff = now - self._ttl_seconds
-                # Evict oldest expired items or oldest item
-                while self._cache:
-                    oldest_key, oldest_time = next(iter(self._cache.items()))
-                    if oldest_time < cutoff or len(self._cache) >= self._max_size:
-                        del self._cache[oldest_key]
+            for word in words:
+                word_clean = word.strip().lower()
+                if word_clean in self._cache:
+                    if now - self._cache[word_clean] < ttl:
+                        continue
                     else:
-                        break
+                        del self._cache[word_clean]
+                uncooled.append(word_clean)
+        return tuple(uncooled)
 
-            self._cache[key] = now
-            return False
+    async def record(self, words: Iterable[str]) -> None:
+        """Record keywords as recently seen."""
+        now = time.monotonic()
+        async with self._lock:
+            for word in words:
+                word_clean = word.strip().lower()
+                if word_clean in self._cache:
+                    del self._cache[word_clean]
+                self._cache[word_clean] = now
+
+    async def release(self, words: Iterable[str]) -> None:
+        """Remove keywords from cooldown (e.g. if dispatch failed)."""
+        async with self._lock:
+            for word in words:
+                word_clean = word.strip().lower()
+                self._cache.pop(word_clean, None)
 
     async def clean_expired(self) -> int:
-        """Active memory sweep: evicts all entries older than TTL. Returns number of purged items."""
+        """Active memory sweep: evicts expired entries based on max TTL."""
         now = time.monotonic()
-        cutoff = now - self._ttl_seconds
         evicted = 0
+        max_possible_ttl = max(self._alert_ttl, self._cancel_ttl)
+        cutoff = now - max_possible_ttl
+
         async with self._lock:
-            # OrderedDict maintains insertion order; oldest entries are at the beginning
             while self._cache:
                 oldest_key, oldest_time = next(iter(self._cache.items()))
                 if oldest_time < cutoff:
@@ -175,6 +184,7 @@ async def safe_api_call(
     coroutine_func: Callable[[], Awaitable[T]],
     timeout_seconds: float = 10.0,
     action_name: str = "Telegram API Call",
+    max_flood_wait_seconds: float = 60.0,
 ) -> Optional[T]:
     """Execute Telegram API call guarded by strict timeout and FloodWait handler.
     
@@ -195,7 +205,7 @@ async def safe_api_call(
         )
         metrics.flood_wait_events += 1
         # Sleep for required flood duration plus safety margin, then return None so caller can retry or drop
-        await asyncio.sleep(min(fw.seconds, 60))
+        await asyncio.sleep(min(fw.seconds, max_flood_wait_seconds))
         return None
     except Exception as exc:
         logger.error("Unexpected error during %s: %s", action_name, exc, exc_info=True)

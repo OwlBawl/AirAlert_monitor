@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from telethon import TelegramClient
 
 from src.config import AppConfig
-from src.safety import AlertRateLimiter, metrics, safe_api_call
+from src.safety import AlertRateLimiter, KeywordDebounceCache, metrics, safe_api_call
 from src.storage import KeywordMatch
 
 logger = logging.getLogger("AirAlert.Dispatcher")
@@ -43,17 +43,19 @@ class AlertDispatcher:
         self,
         bot_client: TelegramClient,
         config: AppConfig,
+        debounce_cache: KeywordDebounceCache,
         user_client: Optional[TelegramClient] = None,
     ) -> None:
         self.bot = bot_client
         self.user_client = user_client
         self.config = config
+        self.debounce_cache = debounce_cache
         self.queue: asyncio.PriorityQueue[tuple[int, int, AlertJob]] = asyncio.PriorityQueue(
             maxsize=config.queue_max_size
         )
         self.rate_limiter = AlertRateLimiter(
-            min_interval_seconds=0.3,
-            burst_capacity=3,
+            min_interval_seconds=config.alert_burst_min_interval_seconds,
+            burst_capacity=config.alert_burst_capacity,
             standard_interval_seconds=config.alert_interval_seconds,
         )
         self._seq = 0
@@ -126,7 +128,12 @@ class AlertDispatcher:
 
     def enqueue(self, job: AlertJob) -> bool:
         """Add an alert job to the priority queue without blocking. Discards if overloaded."""
-        priority = 0 if job.match.tier in ("critical", "cancellation_critical") else 1
+        if job.match.tier == "critical":
+            priority = 0
+        elif job.match.tier == "standard":
+            priority = 1
+        else:
+            priority = 2
         try:
             self.queue.put_nowait((priority, self._seq, job))
             self._seq += 1
@@ -181,9 +188,11 @@ class AlertDispatcher:
         if tier == "critical":
             banner = "‼️🚨‼️\n"
         elif tier == "cancellation_critical":
-            banner = "🟡⚠️🟡\n"
-        elif tier == "cancellation_standard":
             banner = "🟢✅🟢\n"
+        elif tier == "standard":
+            banner = "⚠️\n"
+        elif tier == "cancellation_standard":
+            banner = "✅\n"
         else:
             banner = ""
 
@@ -215,13 +224,14 @@ class AlertDispatcher:
             target = await self.resolve_target_entity()
         if not target:
             logger.warning("Target chat entity not resolved. Alert queued/dropped.")
+            await self.debounce_cache.release(job.match.matched_words)
             return
 
         alert_message = self.format_alert(job)
         is_cancellation = job.match.tier.startswith("cancellation")
 
         # Send alert card (silent for cancellation alerts, sound enabled for active alerts)
-        await safe_api_call(
+        res = await safe_api_call(
             lambda: self.bot.send_message(
                 entity=target,
                 message=alert_message,
@@ -231,7 +241,13 @@ class AlertDispatcher:
             ),
             timeout_seconds=self.config.api_timeout_seconds,
             action_name="Alert Send",
+            max_flood_wait_seconds=self.config.max_flood_wait_seconds,
         )
+
+        if res is None:
+            logger.warning("Dispatch failed. Releasing cooldown for %s", job.match.matched_words)
+            await self.debounce_cache.release(job.match.matched_words)
+            return
 
         metrics.alerts_forwarded += 1
         logger.info(

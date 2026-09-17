@@ -15,7 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.safety import AlertRateLimiter, DeduplicationCache, safe_api_call
+from src.safety import AlertRateLimiter, KeywordDebounceCache, safe_api_call
 from src.storage import DynamicStore
 
 
@@ -77,30 +77,34 @@ async def test_word_boundary_and_tier_matching() -> None:
 
 
 @pytest.mark.asyncio
-async def test_deduplication_cache() -> None:
-    """Verify deduplication cache prevents repeated processing of (chat_id, message_id)."""
-    cache = DeduplicationCache(max_size=10, ttl_seconds=1.0)
+async def test_debounce_cache() -> None:
+    """Verify keyword debounce cache prevents repeated alerts for the same keyword."""
+    cache = KeywordDebounceCache(alert_ttl_seconds=1.0, cancel_ttl_seconds=2.0)
 
-    # First addition -> not duplicate
-    is_dup1 = await cache.check_and_add(1001, 555)
-    assert not is_dup1
+    # First addition
+    words = ("ракета", "дрон")
+    uncooled1 = await cache.filter_uncooled(words, "critical")
+    assert uncooled1 == ("ракета", "дрон")
+    await cache.record(uncooled1)
 
-    # Second addition immediate -> is duplicate
-    is_dup2 = await cache.check_and_add(1001, 555)
-    assert is_dup2
+    # Immediate check -> cooled down
+    uncooled2 = await cache.filter_uncooled(words, "critical")
+    assert len(uncooled2) == 0
 
-    # Different message_id -> not duplicate
-    is_dup3 = await cache.check_and_add(1001, 556)
-    assert not is_dup3
-
-    # Different chat_id -> not duplicate
-    is_dup4 = await cache.check_and_add(1002, 555)
-    assert not is_dup4
+    # Partial new words
+    uncooled3 = await cache.filter_uncooled(("ракета", "шахед"), "critical")
+    assert uncooled3 == ("шахед",)
+    
+    # Test release
+    await cache.release(("ракета",))
+    uncooled4 = await cache.filter_uncooled(("ракета",), "critical")
+    assert uncooled4 == ("ракета",)
 
     # Wait for TTL expiry
+    await cache.record(("шахед",))
     await asyncio.sleep(1.1)
-    is_dup5 = await cache.check_and_add(1001, 555)
-    assert not is_dup5  # Expired, so accepted again
+    uncooled5 = await cache.filter_uncooled(("шахед",), "critical")
+    assert uncooled5 == ("шахед",)
 
 
 @pytest.mark.asyncio
