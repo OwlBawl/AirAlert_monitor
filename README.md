@@ -151,10 +151,11 @@ The parser supports three powerful keyword matching modes across all tiers (`cri
    - Example: `/add_critical баліст` matches *балістика*, *балістичних*, *балістикою*, *балістичні*.
    - Multi-word keys: `/add_critical крилат ракет` requires all tokens to be present anywhere in the message.
 
-2. **Strict Standalone Word Matching (`[word]`)**:
+2. **Strict Matching (`[word]`)**:
    Enclosing a keyword in square brackets `[...]` enforces strict boundary matching on both sides `(?<!\w)word(?!\w)`.
-   - Example: `/add_critical [бр]` matches **only** the standalone word *бр*, and will **not** trigger on *зброя*, *добра*, or *обрахунок*.
-   - Strict phrase: `/add_key [вихід київ]` matches the exact contiguous phrase *вихід київ*.
+   - Standalone word: `/add_critical [бр]` matches **only** the standalone word *бр*, and will **not** trigger on *зброя* чи *добра*.
+   - Exact phrase: `/add_key [балістика київ]` matches the exact contiguous phrase *балістика київ* (ignores extra spaces but forbids other words between them).
+   - Multiple strict words: `/add_key [балістика] [київ]` requires both strict words to appear anywhere in the text independently. (Separators like commas are safely ignored, e.g., `[балістика],[київ]` works the same).
 
 3. **Stop-Words & Negative Filtering (`-word` or `-[word]`)**:
    Prefixing any keyword with a hyphen `-` registers it as an exclusion rule in that tier. If any active stop-word is present in the text, the alert is suppressed immediately.
