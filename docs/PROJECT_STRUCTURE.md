@@ -19,9 +19,9 @@ A comprehensive developer and AI context guide detailing the architecture, modul
                 │                                        │
                 ▼                                        │
        [ parser.py ]                                [ dispatcher.py ]
-       • loop guard                                 • 1 msg/sec pacing
-       • dedup check                                • 3-line alert card
-       • channel filter                             • critical prefix
+       • loop guard                                 • priority queue (0, 1, 2)
+       • channel allowlist                          • burst rate pacing
+       • message age & debounce                     • tier banners (🚨, ⚠️, ✅)
                 │                                        ▲
                 ▼                                        │
        [ storage.py ]                                    │
@@ -41,7 +41,7 @@ AirAlert_monitor/
 ├── src/                    # Application source code
 │   ├── __init__.py
 │   ├── config.py           # Environment & AppConfig schema
-│   ├── safety.py           # DeduplicationCache, AlertRateLimiter, safe_api_call
+│   ├── safety.py           # KeywordDebounceCache, AlertRateLimiter, safe_api_call
 │   ├── storage.py          # DynamicStore, KeywordMatch, atomic JSON writes
 │   ├── dispatcher.py       # AlertDispatcher, AlertJob queue consumer
 │   ├── parser.py           # User client listener, filtering & intake
@@ -83,7 +83,7 @@ Provides typed, validated configuration loading with fallbacks.
 - **`_get_env_float(key: str, default: float) -> float`**:
   Safe parser for floating-point environment variables.
 - **`class AppConfig`** (Frozen dataclass):
-  - Attributes: `api_id`, `api_hash`, `bot_token`, `target_chat_id`, `user_session_name`, `bot_session_name`, `keywords_file`, `channels_file`, `alert_interval_seconds`, `api_timeout_seconds`, `heartbeat_interval_seconds`, `dedup_ttl_seconds`, `dedup_max_size` (default: 500), `queue_max_size` (default: 100), `log_max_bytes` (default: 10MB), `log_backup_count` (default: 5).
+  - Attributes: `api_id`, `api_hash`, `bot_token`, `target_chat_id`, `user_session_name`, `bot_session_name`, `keywords_file`, `channels_file`, `alert_interval_seconds`, `api_timeout_seconds`, `heartbeat_interval_seconds`, `keyword_cooldown_alert_seconds`, `keyword_cooldown_cancel_seconds`, `alert_burst_min_interval_seconds`, `alert_burst_capacity`, `max_flood_wait_seconds`, `queue_max_size` (default: 100), `log_max_bytes` (default: 10MB), `log_backup_count` (default: 5).
   - `load() -> AppConfig`: Factory method constructing configuration from `.env` and environment variables.
 - **`config: AppConfig`**:
   Global singleton configuration instance.
@@ -93,14 +93,16 @@ Provides typed, validated configuration loading with fallbacks.
 ### `src/safety.py`
 Protects the service against hangs, loops, duplicate notifications, and Telegram API flood limits.
 
-- **`class DeduplicationCache`**:
-  - `__init__(max_size: int = 500, ttl_seconds: float = 3600.0)`: Initializes in-memory `OrderedDict` with an `asyncio.Lock`.
-  - `check_and_add(chat_id: int, message_id: int) -> bool`: Checks if `(chat_id, message_id)` was processed within TTL. Returns `True` if duplicate, `False` if newly registered. Evicts oldest expired items or oldest item when max size (500) is reached.
-  - `clean_expired() -> int`: Active memory sweep executed on watchdog cycles to proactively evict expired message IDs.
+- **`class KeywordDebounceCache`**:
+  - `__init__(alert_ttl_seconds: float = 60.0, cancel_ttl_seconds: float = 300.0)`: Initializes in-memory `OrderedDict` with an `asyncio.Lock`.
+  - `filter_uncooled(words, tier) -> Tuple`: Returns only keywords that are not currently in cooldown.
+  - `record(words) -> None`: Records keywords as recently alerted to start their cooldown.
+  - `release(words) -> None`: Removes keywords from cooldown (e.g. if dispatch failed).
+  - `clean_expired() -> int`: Active memory sweep executed on watchdog cycles to proactively evict expired keywords.
   - `size() -> int`: Returns current cached entry count.
 - **`class AlertRateLimiter`**:
-  - `__init__(min_interval_seconds: float = 1.0)`: Enforces minimum elapsed time between consecutive alerts (default: 1.0 second).
-  - `wait_turn() -> None`: Async sleep until at least `min_interval_seconds` has passed since the previous alert.
+  - `__init__(min_interval_seconds: float = 0.3, burst_capacity: int = 3, standard_interval_seconds: float = 1.0)`: Burst-aware rate limiter supporting rapid critical alerts (0.3s burst interval, up to burst capacity) and standard pacing (1.0s).
+  - `wait_turn(tier: str = "standard") -> None`: Async sleep ensuring compliant inter-alert intervals based on tier and available burst tokens.
 - **`class ServiceMetrics`**:
   - Counters: `messages_scanned`, `keywords_matched`, `alerts_forwarded`, `duplicates_filtered`, `errors_caught`, `flood_wait_events`.
   - `get_uptime_str() -> str`: Returns human-readable uptime formatted as `Xh Ym Zs`.
@@ -140,32 +142,35 @@ Processes the alert queue at a controlled rate and formats notifications.
 - **`class AlertJob`** (Dataclass):
   - Attributes: `source_chat_id`, `source_chat_title`, `source_chat_username`, `message_id`, `message_date`, `message_text`, `match`.
 - **`class AlertDispatcher`**:
-  - `__init__(bot_client: TelegramClient, config: AppConfig)`: Initializes bounded queue (`maxsize=config.queue_max_size`, default 100) and rate limiter.
-  - `enqueue(job: AlertJob) -> bool`: Non-blocking queue enqueue; drops safely if queue is full.
+  - `__init__(bot_client: TelegramClient, config: AppConfig, debounce_cache: KeywordDebounceCache, user_client: Optional[TelegramClient] = None)`: Initializes bounded priority queue (`asyncio.PriorityQueue`, maxsize `config.queue_max_size`) and burst-aware rate limiter.
+  - `enqueue(job: AlertJob) -> bool`: Non-blocking priority queue enqueue (priority 0 = critical, priority 1 = standard, priority 2 = cancellations); drops safely if queue is full.
   - `start() -> None`: Launches background worker `_process_queue_loop`.
   - `stop() -> None`: Gracefully cancels worker task.
-  - `_process_queue_loop() -> None`: Infinite async loop consuming jobs with `rate_limiter.wait_turn()`.
+  - `_process_queue_loop() -> None`: Infinite async loop consuming jobs from the priority queue with `rate_limiter.wait_turn()`.
   - `format_alert(job: AlertJob) -> str`:
-    Formats structured 3-line HTML alert card:
-    1. Quoted text block: `<blockquote>` with original message text (prefixed with `‼️🚨‼️ ` for Critical tier).
-    2. Metadata line: `📢 {channel_name}: {matched_words}`.
-    3. Direct message link: `🔗 https://t.me/.../{message_id}`.
+    Formats structured HTML alert card:
+    1. Tier banner above quote: `‼️🚨‼️\n` for critical, `🟢✅🟢\n` for cancellation_critical, `⚠️\n` for standard, `✅\n` for cancellation_standard.
+    2. Quoted text block: `<blockquote>` with original message text.
+    3. Metadata line: `📢 {channel_name}: {matched_words}`.
+    4. Direct message link: `🔗 https://t.me/.../{message_id}`.
   - `_dispatch_single_alert(job: AlertJob) -> None`:
-    Resolves target entity and dispatches the alert card via `safe_api_call` with sound enabled (`silent=False`).
+    Resolves target entity and dispatches the alert card via `safe_api_call` (silent for cancellation alerts, sound enabled for active alerts). Releases keyword cooldown if dispatch fails.
 
 ---
 
 ### `src/parser.py`
 User account listener capturing incoming and edited channel messages.
 
-- **`setup_parser_handlers(user_client, config, store, dedup, dispatcher) -> None`**:
+- **`setup_parser_handlers(user_client, config, store, debounce_cache, dispatcher) -> None`**:
   Registers `@user_client.on(events.NewMessage)` and `@user_client.on(events.MessageEdited)`.
   Execution pipeline:
   1. **Loop Guard**: If `chat_id == config.target_chat_id`, skip.
-  2. **Channel Filter**: If `channels.json` is configured, verifies `store.is_channel_monitored(chat_id, username)`.
-  3. **Deduplication**: `dedup.check_and_add(chat_id, message_id)`. If duplicate, increment metric and drop.
-  4. **Text Evaluation**: `store.match_text(raw_text)`.
-  5. **Enqueue**: Creates `AlertJob` and submits to `dispatcher.enqueue()`.
+  2. **Channel Allowlist**: If `channels.json` is configured, verifies `store.is_channel_monitored(chat_id, username)` before running regex or parsing.
+  3. **Message Age Guard**: Drops messages older than `config.max_message_age_seconds` (default 300s).
+  4. **Keyword Match**: `store.match_text(raw_text)`.
+  5. **Keyword Debounce**: `debounce_cache.filter_uncooled(matched_words, tier)`. Drops if all words are in cooldown.
+  6. **Enqueue**: Creates `AlertJob` and submits to `dispatcher.enqueue()`.
+  7. **Record Cooldown**: Immediately records `debounce_cache.record(uncooled_words)` on successful enqueue.
 
 ---
 
@@ -194,7 +199,7 @@ Lifecycle manager and watchdog runner.
 - **`class AirAlertService`**:
   - `start() -> None`: Loads storage, starts Bot client, launches dispatcher, starts User client, binds handlers, launches heartbeat task.
   - `_heartbeat_loop() -> None`:
-    - Every 30 seconds: checks connection and auto-reconnects; actively sweeps expired message IDs via `dedup.clean_expired()`.
+    - Every 30 seconds: checks connection and auto-reconnects; actively sweeps expired keywords via `debounce_cache.clean_expired()`.
     - Every 5 minutes: runs `gc.collect()` to free transient MTProto buffers and logs deep health telemetry.
   - `stop() -> None`: Cancels heartbeat, stops dispatcher, disconnects clients cleanly.
   - `run_until_disconnected() -> None`: Listens for OS `SIGINT` and `SIGTERM` signals for graceful exit.

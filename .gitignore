@@ -30,7 +30,32 @@ env/
 
 # OS artifacts
 .DS_Store
+._*
 Thumbs.db
+.Spotlight-V100
+.Trashes
+
+# IDEs & Editors
+.cursor/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Agentic & AI Workspace
+.agents/
+
+# Testing, Linting & Coverage
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Build & Packaging
+build/
+dist/
+*.egg-info/
 
 # Generated deployment units
 deploy/airalert.service

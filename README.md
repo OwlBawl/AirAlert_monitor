@@ -10,18 +10,18 @@ Production-grade, dual-client Telegram monitoring system built with Telethon. Li
 [ Telegram Channels / Groups ]
               │
               ▼ (Telethon User Client: api_id, api_hash)
-       [ parser.py ] ─── Loop Guard & Deduplication Cache
+       [ parser.py ] ─── Loop Guard & Keyword Debounce Cache
               │
               ▼ (Word-boundary regex: standard & critical)
        [ storage.py ] ─── Dynamic JSON Store (keywords.json, channels.json)
               │
               ▼ (Async Queue with 1 msg/sec Rate Limiter)
-      [ dispatcher.py ]
+       [ dispatcher.py ]
               │
               ▼ (Telethon Bot Client: bot_token)
   [ Target Chat / Channel ]
   • Structured HTML Alert Card:
-    - Quoted message text in <blockquote> (with ‼️🚨‼️ prefix for Critical alerts)
+    - Quoted message text in <blockquote> with tier banners (‼️🚨‼️, ⚠️, 🟢✅🟢, ✅)
     - Source channel name & matched keyword(s)
     - Direct link to original post
   • Interactive Bot Management Commands (/add_key, /status, etc.)
@@ -35,7 +35,7 @@ Production-grade, dual-client Telegram monitoring system built with Telethon. Li
 
 - **Anti-Hang Protection:** Telegram API operations are guarded by strict 10-second timeout wrappers (`asyncio.wait_for`).
 - **Loop Prevention:** Hard-coded loop guard drops any message originating from or directed to `TARGET_CHAT_ID`.
-- **Deduplication:** In-memory TTL/LRU cache suppresses repeat notifications for edited or reposted messages.
+- **Keyword Debounce:** In-memory cooldown cache (default 60s alert / 300s cancel) suppresses repeat notifications for identical keywords while allowing genuine updates and edits.
 - **Flood Control:** Outbound alert queue enforces a 1 msg/sec rate limit with dynamic `FloodWaitError` backoff.
 - **Connection Watchdog:** 30-second heartbeat pings both clients and triggers automatic reconnections if network drops.
 
@@ -132,9 +132,9 @@ Any administrator inside the destination alert chat or user in private DM can ma
 | `/id` | Display current chat ID |
 | `/add_critical <word>` | Add to **CRITICAL** tier (loud banner `‼️🚨‼️` + sound) |
 | `/del_critical <word>` | Remove keyword from critical tier |
-| `/add_key <word>` | Add to **Standard** tier (normal notification + sound) |
+| `/add_key <word>` | Add to **Standard** tier (banner `⚠️` + sound) |
 | `/del_key <word>` | Remove keyword from standard tier |
-| `/add_cancel <word>` | Add to **Cancellation** tier (`🟡⚠️🟡` / `🟢✅🟢` silent banner) |
+| `/add_cancel <word>` | Add to **Cancellation** tier (`🟢✅🟢` / `✅` silent banner) |
 | `/del_cancel <word>` | Remove keyword from cancellation tier |
 | `/list_keys` | View all active critical, standard, and cancellation words |
 | `/add_channel [@user/ID]` | Add channel or group to monitor |
@@ -151,10 +151,11 @@ The parser supports three powerful keyword matching modes across all tiers (`cri
    - Example: `/add_critical баліст` matches *балістика*, *балістичних*, *балістикою*, *балістичні*.
    - Multi-word keys: `/add_critical крилат ракет` requires all tokens to be present anywhere in the message.
 
-2. **Strict Standalone Word Matching (`[word]`)**:
+2. **Strict Matching (`[word]`)**:
    Enclosing a keyword in square brackets `[...]` enforces strict boundary matching on both sides `(?<!\w)word(?!\w)`.
-   - Example: `/add_critical [бр]` matches **only** the standalone word *бр*, and will **not** trigger on *зброя*, *добра*, or *обрахунок*.
-   - Strict phrase: `/add_key [вихід київ]` matches the exact contiguous phrase *вихід київ*.
+   - Standalone word: `/add_critical [бр]` matches **only** the standalone word *бр*, and will **not** trigger on *зброя* чи *добра*.
+   - Exact phrase: `/add_key [балістика київ]` matches the exact contiguous phrase *балістика київ* (ignores extra spaces but forbids other words between them).
+   - Multiple strict words: `/add_key [балістика] [київ]` requires both strict words to appear anywhere in the text independently. (Separators like commas are safely ignored, e.g., `[балістика],[київ]` works the same).
 
 3. **Stop-Words & Negative Filtering (`-word` or `-[word]`)**:
    Prefixing any keyword with a hyphen `-` registers it as an exclusion rule in that tier. If any active stop-word is present in the text, the alert is suppressed immediately.
@@ -227,7 +228,7 @@ sudo systemctl status airalert.service
 
 ## Running Tests
 
-Run the test suite to verify regex matching, rate-limiting, deduplication, and timeout escapes:
+Run the test suite to verify regex matching, rate-limiting, keyword debounce, and timeout escapes:
 
 ```bash
 python3 -m unittest tests/run_tests.py
@@ -241,7 +242,7 @@ python3 -m unittest tests/run_tests.py
 AirAlert_monitor/
 ├── src/                    # Application source code
 │   ├── config.py           # Environment & settings loader
-│   ├── safety.py           # Anti-hang, rate-limiter & deduplication
+│   ├── safety.py           # Anti-hang, rate-limiter & keyword debounce
 │   ├── storage.py          # Dynamic keywords/channels store & regex
 │   ├── dispatcher.py       # Queue consumer & alert forwarder
 │   ├── parser.py           # UserClient channel intake listener

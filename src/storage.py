@@ -80,42 +80,69 @@ class DynamicStore:
             if not phrase:
                 continue
 
-            is_strict = phrase.startswith("[") and phrase.endswith("]")
-            match_phrase = phrase[1:-1].strip() if is_strict else phrase
-            if not match_phrase:
+            # Tokenize by finding bracketed groups or bare words
+            # Example: "[балістика київ]" -> ["[балістика київ]"]
+            # "[балістика] [київ]" -> ["[балістика]", "[київ]"]
+            # "[балістика],[київ]" -> ["[балістика]", "[київ]"] (ignores commas)
+            # "балістика київ" -> ["балістика", "київ"]
+            raw_tokens = re.findall(r'\[[^\]]+\]|[^\[\]\s,;+]+', phrase)
+            if not raw_tokens:
                 continue
 
-            tokens = match_phrase.split()
-            if len(tokens) == 1:
-                escaped_word = re.escape(tokens[0])
-                if is_strict:
-                    single_words.append(escaped_word + r"(?!\w)")
+            if len(raw_tokens) == 1:
+                token = raw_tokens[0]
+                is_strict = token.startswith("[") and token.endswith("]")
+                content = token[1:-1].strip() if is_strict else token
+                if not content:
+                    continue
+
+                inner_tokens = content.split()
+                if not inner_tokens:
+                    continue
+
+                if len(inner_tokens) == 1:
+                    escaped_word = re.escape(inner_tokens[0])
+                    if is_strict:
+                        single_words.append(escaped_word + r"(?!\w)")
+                    else:
+                        single_words.append(escaped_word)
                 else:
-                    single_words.append(escaped_word)
-            else:
-                if is_strict:
+                    escaped_phrase = r"\s+".join(re.escape(t) for t in inner_tokens)
                     multi_patterns.append(
                         (
                             phrase,
                             (
                                 re.compile(
-                                    r"(?<!\w)" + re.escape(match_phrase) + r"(?!\w)",
+                                    r"(?<!\w)" + escaped_phrase + (r"(?!\w)" if is_strict else ""),
                                     flags=re.IGNORECASE | re.UNICODE,
                                 ),
                             ),
                         )
                     )
-                    continue
+            else:
+                token_regexes = []
+                for token in raw_tokens:
+                    is_strict = token.startswith("[") and token.endswith("]")
+                    content = token[1:-1].strip() if is_strict else token
+                    if not content:
+                        continue
 
-                # Compile regex for each token in multi-word key.
-                # Use word-start boundary (?<!\w) allowing inflections/suffixes on stems
-                token_regexes = tuple(
-                    re.compile(r"(?<!\w)" + re.escape(t), flags=re.IGNORECASE | re.UNICODE)
-                    for t in tokens
-                    if t
-                )
+                    inner_tokens = content.split()
+                    if not inner_tokens:
+                        continue
+
+                    escaped_part = r"\s+".join(re.escape(t) for t in inner_tokens)
+                    if is_strict:
+                        token_regexes.append(
+                            re.compile(r"(?<!\w)" + escaped_part + r"(?!\w)", flags=re.IGNORECASE | re.UNICODE)
+                        )
+                    else:
+                        token_regexes.append(
+                            re.compile(r"(?<!\w)" + escaped_part, flags=re.IGNORECASE | re.UNICODE)
+                        )
+
                 if token_regexes:
-                    multi_patterns.append((phrase, token_regexes))
+                    multi_patterns.append((phrase, tuple(token_regexes)))
 
         single_regex: Optional[re.Pattern[str]] = None
         if single_words:

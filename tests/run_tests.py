@@ -15,7 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.config import AppConfig
 from src.dispatcher import AlertDispatcher, AlertJob
-from src.safety import AlertRateLimiter, DeduplicationCache, safe_api_call
+from src.safety import AlertRateLimiter, KeywordDebounceCache, safe_api_call
 from src.storage import DynamicStore, KeywordMatch
 
 
@@ -96,36 +96,37 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(res9.tier, "standard")
                     self.assertIn("бр", res9.matched_words)
 
-    async def test_deduplication_cache(self) -> None:
-        cache = DeduplicationCache(max_size=10, ttl_seconds=0.5)
+    async def test_debounce_cache(self) -> None:
+        cache = KeywordDebounceCache(alert_ttl_seconds=0.5, cancel_ttl_seconds=1.0)
 
-        # First addition -> not duplicate
-        is_dup1 = await cache.check_and_add(1001, 555)
-        self.assertFalse(is_dup1)
+        # First addition
+        words = ("ракета", "дрон")
+        uncooled1 = await cache.filter_uncooled(words, "critical")
+        self.assertEqual(uncooled1, ("ракета", "дрон"))
+        await cache.record(uncooled1)
 
-        # Second addition immediate -> is duplicate
-        is_dup2 = await cache.check_and_add(1001, 555)
-        self.assertTrue(is_dup2)
+        # Immediate check -> cooled down
+        uncooled2 = await cache.filter_uncooled(words, "critical")
+        self.assertEqual(len(uncooled2), 0)
 
-        # Different message_id -> not duplicate
-        is_dup3 = await cache.check_and_add(1001, 556)
-        self.assertFalse(is_dup3)
+        # Partial new words
+        uncooled3 = await cache.filter_uncooled(("ракета", "шахед"), "critical")
+        self.assertEqual(uncooled3, ("шахед",))
+        
+        # Test release
+        await cache.release(("ракета",))
+        uncooled4 = await cache.filter_uncooled(("ракета",), "critical")
+        self.assertEqual(uncooled4, ("ракета",))
 
-        # Wait for TTL expiry
-        await asyncio.sleep(0.6)
-        is_dup4 = await cache.check_and_add(1001, 555)
-        self.assertFalse(is_dup4)
-
-    async def test_deduplication_clean_expired(self) -> None:
-        cache = DeduplicationCache(max_size=500, ttl_seconds=0.2)
-        await cache.check_and_add(1, 100)
-        await cache.check_and_add(1, 101)
-        self.assertEqual(await cache.size(), 2)
+    async def test_debounce_clean_expired(self) -> None:
+        cache = KeywordDebounceCache(alert_ttl_seconds=0.2, cancel_ttl_seconds=0.5)
+        await cache.record(("вибух",))
+        self.assertEqual(await cache.size(), 1)
 
         # Wait for expiry
-        await asyncio.sleep(0.25)
+        await asyncio.sleep(0.6)
         purged = await cache.clean_expired()
-        self.assertEqual(purged, 2)
+        self.assertEqual(purged, 1)
         self.assertEqual(await cache.size(), 0)
 
     async def test_rate_limiter_burst_and_spacing(self) -> None:
@@ -179,13 +180,17 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
             alert_interval_seconds=1.0,
             api_timeout_seconds=10.0,
             heartbeat_interval_seconds=30.0,
-            dedup_ttl_seconds=3600.0,
-            dedup_max_size=500,
+            max_message_age_seconds=300.0,
+            max_flood_wait_seconds=60.0,
+            keyword_cooldown_alert_seconds=60.0,
+            keyword_cooldown_cancel_seconds=300.0,
+            alert_burst_min_interval_seconds=0.3,
+            alert_burst_capacity=3,
             queue_max_size=100,
             log_max_bytes=1024,
             log_backup_count=1,
         )
-        dispatcher = AlertDispatcher(bot_client=None, config=config)  # type: ignore[arg-type]
+        dispatcher = AlertDispatcher(bot_client=None, config=config, debounce_cache=KeywordDebounceCache())  # type: ignore[arg-type]
         self.assertEqual(dispatcher.send_target(), config.target_chat_id)
 
         cached = object()
@@ -335,6 +340,7 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
         )
         msg_text = AlertDispatcher.format_alert(std_job)
         expected_std = (
+            "⚠️\n"
             "<blockquote>🅿️ 2х мгКР Бандероль вектор Переяслав, далі Обухів.</blockquote>\n"
             "📢 monitor: бандероль\n"
             "🔗 https://t.me/war_monitor/43888"
@@ -371,9 +377,9 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
             match=KeywordMatch(tier="cancellation_critical", matched_words=["відбій"]),
         )
         msg_cancel_crit = AlertDispatcher.format_alert(cancel_crit_job)
-        self.assertTrue(msg_cancel_crit.startswith("🟡⚠️🟡\n"))
+        self.assertTrue(msg_cancel_crit.startswith("🟢✅🟢\n"))
 
-        # Cancellation standard test (🟢✅🟢 banner)
+        # Cancellation standard test (✅ banner)
         cancel_std_job = AlertJob(
             source_chat_id=-1001234567890,
             source_chat_title="monitor",
@@ -384,7 +390,7 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
             match=KeywordMatch(tier="cancellation_standard", matched_words=["відбій"]),
         )
         msg_cancel_std = AlertDispatcher.format_alert(cancel_std_job)
-        self.assertTrue(msg_cancel_std.startswith("🟢✅🟢\n"))
+        self.assertTrue(msg_cancel_std.startswith("✅\n"))
 
     async def test_message_age_guard_drops_stale_messages(self) -> None:
         import datetime
@@ -416,14 +422,14 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
                 max_message_age_seconds=300.0,
             )
 
-            dedup = DeduplicationCache(max_size=100, ttl_seconds=3600.0)
-            dispatcher = AlertDispatcher(bot_client=None, config=config)  # type: ignore[arg-type]
+            debounce_cache = KeywordDebounceCache(alert_ttl_seconds=3600.0)
+            dispatcher = AlertDispatcher(bot_client=None, config=config, debounce_cache=debounce_cache)  # type: ignore[arg-type]
 
             # Register parser handler on mock client
             mock_client = MagicMock()
             handlers = []
             mock_client.on.side_effect = lambda event_type: (lambda fn: handlers.append(fn) or fn)
-            setup_parser_handlers(mock_client, config, store, dedup, dispatcher)
+            setup_parser_handlers(mock_client, config, store, debounce_cache, dispatcher)
             self.assertTrue(len(handlers) > 0)
             handle_message = handlers[0]
 

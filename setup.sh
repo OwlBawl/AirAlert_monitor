@@ -68,6 +68,12 @@ else
     "$PIP_BIN" install -r requirements.txt
 fi
 
+# Helper Python executable for setup checks (falls back to system python3 if venv not yet installed)
+PY_HELPER="$PYTHON_BIN"
+if [ ! -x "$PY_HELPER" ]; then
+    PY_HELPER="$(command -v python3 || echo python3)"
+fi
+
 # Helper function to check and prompt for environment variables
 prompt_env_var() {
     local key="$1"
@@ -76,11 +82,19 @@ prompt_env_var() {
     local default_hint="${4:-}"
 
     local current_val=""
-    if [ -f "$CONFIG_DIR/.env" ] && [ -x "$PYTHON_BIN" ]; then
-        current_val="$("$PYTHON_BIN" -c "
-import dotenv
-val = dotenv.dotenv_values('$CONFIG_DIR/.env').get('$key') or ''
-print(val.strip())
+    if [ -f "$CONFIG_DIR/.env" ] && command -v "$PY_HELPER" >/dev/null 2>&1; then
+        current_val="$("$PY_HELPER" -c "
+import re
+val = ''
+try:
+    with open('$CONFIG_DIR/.env', 'r', encoding='utf-8') as f:
+        for line in f:
+            m = re.match(r'^' + re.escape('$key') + r'=(.*)', line.strip())
+            if m:
+                val = m.group(1).strip()
+except Exception:
+    pass
+print(val)
 " 2>/dev/null || true)"
     fi
 
@@ -96,16 +110,16 @@ print(val.strip())
             read -r -p "Enter $key: " input_val
             input_val="${input_val:-$default_hint}"
             if [ -n "$input_val" ]; then
-                "$PYTHON_BIN" -c "
+                "$PY_HELPER" -c "
 import sys, re
 key, val, path = sys.argv[1], sys.argv[2], sys.argv[3]
-with open(path, 'r') as f:
+with open(path, 'r', encoding='utf-8') as f:
     text = f.read()
 if re.search(r'^' + re.escape(key) + r'=.*', text, flags=re.M):
     text = re.sub(r'^' + re.escape(key) + r'=.*', f'{key}={val}', text, flags=re.M)
 else:
     text += f'\n{key}={val}\n'
-with open(path, 'w') as f:
+with open(path, 'w', encoding='utf-8') as f:
     f.write(text)
 " "$key" "$input_val" "$CONFIG_DIR/.env"
                 echo "  ✅ Saved $key to config/.env"
@@ -129,6 +143,61 @@ if [ ! -f "$CONFIG_DIR/.env" ]; then
         else
             echo "  Initializing config/.env from config/.env.example..."
             cp "$CONFIG_DIR/.env.example" "$CONFIG_DIR/.env"
+        fi
+    fi
+else
+    # Synchronize config/.env with config/.env.example: remove obsolete variables & append missing ones
+    if [ -f "$CONFIG_DIR/.env.example" ] && command -v "$PY_HELPER" >/dev/null 2>&1; then
+        if [ "$DRY_RUN" = true ]; then
+            "$PY_HELPER" -c "
+import re
+with open('$CONFIG_DIR/.env', 'r', encoding='utf-8') as f:
+    env_content = f.read()
+obsolete = [k for k in ['DEDUP_TTL_SECONDS', 'DEDUP_MAX_SIZE'] if re.search(r'^' + re.escape(k) + r'=.*', env_content, flags=re.M)]
+if obsolete:
+    print('  [DRY-RUN] Would remove obsolete variable(s) from config/.env: ' + ', '.join(obsolete))
+
+with open('$CONFIG_DIR/.env.example', 'r', encoding='utf-8') as f:
+    ex_lines = f.readlines()
+missing = [re.match(r'^([A-Z0-9_]+)=', l).group(1) for l in ex_lines if re.match(r'^([A-Z0-9_]+)=', l) and not re.search(r'^' + re.escape(re.match(r'^([A-Z0-9_]+)=', l).group(1)) + r'=', env_content, flags=re.M)]
+if missing:
+    print('  [DRY-RUN] Would synchronize missing variables to config/.env: ' + ', '.join(missing))
+" 2>/dev/null || true
+        else
+            "$PY_HELPER" -c "
+import re
+env_path = '$CONFIG_DIR/.env'
+with open(env_path, 'r', encoding='utf-8') as f:
+    lines = f.readlines()
+
+obsolete = {'DEDUP_TTL_SECONDS', 'DEDUP_MAX_SIZE'}
+new_lines = []
+removed = []
+for line in lines:
+    m = re.match(r'^([A-Z0-9_]+)=', line.strip())
+    if m and m.group(1) in obsolete:
+        removed.append(m.group(1))
+    else:
+        new_lines.append(line)
+
+if removed:
+    with open(env_path, 'w', encoding='utf-8') as f:
+        f.writelines(new_lines)
+    print('  🗑️  Removed obsolete variable(s) from config/.env: ' + ', '.join(removed))
+
+with open(env_path, 'r', encoding='utf-8') as f:
+    env_content = f.read()
+
+with open('$CONFIG_DIR/.env.example', 'r', encoding='utf-8') as f:
+    ex_lines = f.readlines()
+
+missing = [l for l in ex_lines if re.match(r'^([A-Z0-9_]+)=', l) and not re.search(r'^' + re.escape(re.match(r'^([A-Z0-9_]+)=', l).group(1)) + r'=', env_content, flags=re.M)]
+if missing:
+    with open(env_path, 'a', encoding='utf-8') as f:
+        f.write('\n# Automatically synchronized on update\n')
+        f.writelines(missing)
+    print('  ✅ Synchronized missing variables into config/.env: ' + ', '.join(re.match(r'^([A-Z0-9_]+)=', l).group(1) for l in missing))
+" 2>/dev/null || true
         fi
     fi
 fi

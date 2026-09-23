@@ -1,6 +1,6 @@
 """Channel parser listener module.
 
-Listens on the Telethon User client for incoming channel messages, applies deduplication
+Listens on the Telethon User client for incoming channel messages, applies keyword debounce
 and loop protection, performs keyword matching, and feeds the alert queue.
 """
 
@@ -39,8 +39,8 @@ except ImportError:
 
 from src.config import AppConfig
 from src.dispatcher import AlertDispatcher, AlertJob
-from src.safety import DeduplicationCache, metrics
-from src.storage import DynamicStore
+from src.safety import KeywordDebounceCache, metrics
+from src.storage import DynamicStore, KeywordMatch
 
 logger = logging.getLogger("AirAlert.Parser")
 
@@ -49,7 +49,7 @@ def setup_parser_handlers(
     user_client: TelegramClient,
     config: AppConfig,
     store: DynamicStore,
-    dedup: DeduplicationCache,
+    debounce_cache: KeywordDebounceCache,
     dispatcher: AlertDispatcher,
 ) -> None:
     """Attach message intake event handlers to Telethon User account client."""
@@ -63,14 +63,30 @@ def setup_parser_handlers(
             if not chat_id:
                 return
 
-            # 1. Loop Guard: NEVER process messages from or to target alert chat
+            # 1. Allowlist Check: Fast path by chat_id
+            monitored_channels = await store.get_channels()
+            if not monitored_channels:
+                return
+
+            if not store.is_channel_monitored(chat_id):
+                # Fallback: resolve entity to check by username
+                chat = event.chat
+                temp_username = None
+                if isinstance(chat, Channel):
+                    temp_username = chat.username
+                elif isinstance(chat, User):
+                    temp_username = chat.username
+                
+                if not store.is_channel_monitored(chat_id, temp_username):
+                    return
+
+            # 2. Loop Guard: NEVER process messages from or to target alert chat
             if config.target_chat_id != 0 and chat_id == config.target_chat_id:
                 return
 
-            # 2. Extract chat entity and username safely
+            # Extract chat title & username for downstream logging
             chat_title = "Unknown Channel"
             chat_username: Optional[str] = None
-
             chat = event.chat
             if isinstance(chat, (Channel, Chat)):
                 chat_title = chat.title or "Channel"
@@ -80,18 +96,9 @@ def setup_parser_handlers(
                 chat_title = f"{chat.first_name or ''} {chat.last_name or ''}".strip() or "User"
                 chat_username = chat.username
 
-            # 3. Channel Filter: Strictly require channel to be in monitored channels
-            monitored_channels = await store.get_channels()
-            if not monitored_channels:
-                # No channels configured yet; ignore messages until channels are added via /add_channel
-                return
-
-            if not store.is_channel_monitored(chat_id, chat_username):
-                return
-
             message_id = event.message.id
 
-            # 4. Message Age Guard: Drop stale, historical, or old re-edited messages (> 5 mins)
+            # 3. Message Age Guard: Drop stale, historical, or old re-edited messages (> 5 mins)
             message_date = event.message.date
             if message_date:
                 now_utc = datetime.datetime.now(datetime.timezone.utc)
@@ -111,25 +118,27 @@ def setup_parser_handlers(
             else:
                 message_date = datetime.datetime.now(datetime.timezone.utc)
 
-            # 5. Deduplication & Anti-Spam Guard
-            is_duplicate = await dedup.check_and_add(chat_id, message_id)
-            if is_duplicate:
-                metrics.duplicates_filtered += 1
-                return
-
-            # 6. Extract text
+            # 4. Extract text
             raw_text = event.raw_text or event.message.message or ""
             if not raw_text.strip():
                 return
 
             metrics.messages_scanned += 1
 
-            # 7. Keyword matching (checks critical tier first, then standard)
+            # 5. Keyword matching (checks critical tier first, then standard)
             match_result = store.match_text(raw_text)
             if not match_result:
                 return
 
-            # 8. Construct AlertJob and enqueue for priority dispatch
+            # 6. Keyword Debounce Filter
+            uncooled_words = await debounce_cache.filter_uncooled(match_result.matched_words, match_result.tier)
+            if not uncooled_words:
+                metrics.duplicates_filtered += 1
+                return
+
+            match_result = KeywordMatch(tier=match_result.tier, matched_words=uncooled_words)
+
+            # 7. Construct AlertJob and enqueue for priority dispatch
             job = AlertJob(
                 source_chat_id=chat_id,
                 source_chat_title=chat_title,
@@ -142,6 +151,7 @@ def setup_parser_handlers(
 
             enqueued = dispatcher.enqueue(job)
             if enqueued:
+                await debounce_cache.record(uncooled_words)
                 logger.info(
                     "Matched %s keywords %s in channel '%s' (id=%s, msg_id=%s)",
                     match_result.tier,
