@@ -51,8 +51,13 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
         bot.get_permissions.return_value = MagicMock(is_admin=True, is_creator=False)
         self.assertTrue(await _is_sender_admin_event(bot, config, dispatcher, event))
 
-        # Anonymous admin is represented as the same group identity.
+        # Anonymous admin may have no sender/from_id in Telethon.
         bot.get_permissions.reset_mock()
+        event.sender_id = None
+        self.assertTrue(await _is_sender_admin_event(bot, config, dispatcher, event))
+        bot.get_permissions.assert_not_awaited()
+
+        # Anonymous admin may also be represented as the same group identity.
         event.sender_id = event.chat_id
         self.assertTrue(await _is_sender_admin_event(bot, config, dispatcher, event))
         bot.get_permissions.assert_not_awaited()

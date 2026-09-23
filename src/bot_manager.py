@@ -59,10 +59,13 @@ async def _is_sender_admin_event(
         return True
 
     sender_id = event.sender_id
-    if not sender_id:
-        return False
 
-    # Telegram represents an anonymous admin message as sent by the group itself.
+    # Telethon may expose anonymous-admin messages with no sender/from_id at all.
+    # This path is only reached after the target chat itself has been authorized.
+    if sender_id is None:
+        return True
+
+    # Telegram may also represent an anonymous admin as the group itself.
     # Only accept that exact same-chat identity; reject posts sent as external channels.
     if sender_id == event.chat_id:
         return True
