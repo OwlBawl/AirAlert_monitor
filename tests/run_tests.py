@@ -6,6 +6,7 @@ import tempfile
 import time
 import sys
 import unittest
+from unittest.mock import AsyncMock, MagicMock
 from pathlib import Path
 
 # Ensure project root is on sys.path
@@ -13,6 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.bot_manager import _is_sender_admin_event, setup_bot_handlers
 from src.config import AppConfig
 from src.dispatcher import AlertDispatcher, AlertJob
 from src.safety import AlertRateLimiter, KeywordDebounceCache, safe_api_call
@@ -20,6 +22,84 @@ from src.storage import DynamicStore, KeywordMatch
 
 
 class TestAirAlert(unittest.IsolatedAsyncioTestCase):
+
+    def _command_config(self) -> AppConfig:
+        return AppConfig(
+            api_id=1,
+            api_hash="hash",
+            bot_token="token",
+            target_chat_id=-1001234567890,
+            user_session_name="user",
+            bot_session_name="bot",
+            keywords_file=Path("keywords.json"),
+            channels_file=Path("channels.json"),
+        )
+
+    async def test_command_authorization_visible_and_anonymous_admins_only(self) -> None:
+        config = self._command_config()
+        dispatcher = MagicMock()
+        bot = MagicMock()
+        bot.get_permissions = AsyncMock()
+
+        event = MagicMock()
+        event.chat_id = config.target_chat_id
+        event.chat = object()
+        event.is_private = False
+
+        # Visible admin is authorized through Telegram permissions.
+        event.sender_id = 12345
+        bot.get_permissions.return_value = MagicMock(is_admin=True, is_creator=False)
+        self.assertTrue(await _is_sender_admin_event(bot, config, dispatcher, event))
+
+        # Anonymous admin is represented as the same group identity.
+        bot.get_permissions.reset_mock()
+        event.sender_id = event.chat_id
+        self.assertTrue(await _is_sender_admin_event(bot, config, dispatcher, event))
+        bot.get_permissions.assert_not_awaited()
+
+        # Regular member is rejected.
+        event.sender_id = 54321
+        bot.get_permissions.return_value = MagicMock(is_admin=False, is_creator=False)
+        self.assertFalse(await _is_sender_admin_event(bot, config, dispatcher, event))
+
+        # A message sent as an external channel must not be treated as an anonymous admin.
+        bot.get_permissions.reset_mock()
+        event.sender_id = -1009876543210
+        self.assertFalse(await _is_sender_admin_event(bot, config, dispatcher, event))
+        bot.get_permissions.assert_not_awaited()
+
+    async def test_id_command_uses_admin_authorization(self) -> None:
+        config = self._command_config()
+        dispatcher = MagicMock()
+        store = MagicMock()
+        bot = MagicMock()
+        bot.get_permissions = AsyncMock()
+        handlers = {}
+
+        def register_handler(_event_spec):
+            def decorator(fn):
+                handlers[fn.__name__] = fn
+                return fn
+            return decorator
+
+        bot.on.side_effect = register_handler
+        setup_bot_handlers(bot, config, store, dispatcher)
+        handle_id = handlers["handle_id"]
+
+        event = MagicMock()
+        event.chat_id = config.target_chat_id
+        event.chat = object()
+        event.is_private = False
+        event.sender_id = 11111
+        event.reply = AsyncMock()
+
+        bot.get_permissions.return_value = MagicMock(is_admin=False, is_creator=False)
+        await handle_id(event)
+        event.reply.assert_not_awaited()
+
+        bot.get_permissions.return_value = MagicMock(is_admin=True, is_creator=False)
+        await handle_id(event)
+        event.reply.assert_awaited_once()
 
     async def test_word_boundary_and_tier_matching(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

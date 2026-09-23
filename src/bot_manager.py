@@ -20,6 +20,63 @@ from src.storage import DynamicStore
 logger = logging.getLogger("AirAlert.BotManager")
 
 
+def _is_authorized_chat_event(
+    event: events.NewMessage.Event,
+    config: AppConfig,
+    dispatcher: AlertDispatcher,
+) -> bool:
+    """Check if a command event belongs to the configured target chat or an allowed DM."""
+    is_auth = False
+    if config.target_chat_id == 0:
+        is_auth = True
+    elif event.chat_id == config.target_chat_id:
+        is_auth = True
+    else:
+        str_target = str(config.target_chat_id)
+        if str_target.startswith("-100") and event.chat_id == int("-" + str_target[4:]):
+            is_auth = True
+        elif str_target.startswith("-") and not str_target.startswith("-100") and event.chat_id == int("-100" + str_target[1:]):
+            is_auth = True
+
+    if is_auth and event.chat:
+        dispatcher.set_target_entity(event.chat)
+
+    return is_auth
+
+
+async def _is_sender_admin_event(
+    bot: TelegramClient,
+    config: AppConfig,
+    dispatcher: AlertDispatcher,
+    event: events.NewMessage.Event,
+) -> bool:
+    """Authorize bot commands for visible admins/creator and anonymous admins."""
+    if not _is_authorized_chat_event(event, config, dispatcher):
+        return False
+
+    # Private chat with the bot remains allowed, matching the existing behavior.
+    if event.is_private:
+        return True
+
+    sender_id = event.sender_id
+    if not sender_id:
+        return False
+
+    # Telegram represents an anonymous admin message as sent by the group itself.
+    # Only accept that exact same-chat identity; reject posts sent as external channels.
+    if sender_id == event.chat_id:
+        return True
+    if sender_id < 0:
+        return False
+
+    try:
+        perms = await bot.get_permissions(event.chat_id, sender_id)
+        return bool(perms and (perms.is_admin or perms.is_creator))
+    except Exception as exc:
+        logger.warning("Could not check permissions for user %s: %s", sender_id, exc)
+        return False
+
+
 async def register_admin_bot_commands(bot: TelegramClient) -> None:
     """Configure Telegram UI bot command scopes if supported by installed Telethon version."""
     try:
@@ -80,48 +137,10 @@ def setup_bot_handlers(
     """Register command handlers for the Telegram Bot client."""
 
     def is_authorized_chat(event: events.NewMessage.Event) -> bool:
-        """Check if message is from the authorized target chat or DM."""
-        is_auth = False
-        if config.target_chat_id == 0:
-            is_auth = True
-        elif event.chat_id == config.target_chat_id:
-            is_auth = True
-        else:
-            # Check alternative ID formats (-100... vs -...)
-            str_target = str(config.target_chat_id)
-            if str_target.startswith("-100") and event.chat_id == int("-" + str_target[4:]):
-                is_auth = True
-            elif str_target.startswith("-") and not str_target.startswith("-100") and event.chat_id == int("-100" + str_target[1:]):
-                is_auth = True
-
-        if is_auth and event.chat:
-            dispatcher.set_target_entity(event.chat)
-
-        return is_auth
+        return _is_authorized_chat_event(event, config, dispatcher)
 
     async def is_sender_admin(event: events.NewMessage.Event) -> bool:
-        """Check if sender is an admin or creator in group/channel, or sender in private DM."""
-        if not is_authorized_chat(event):
-            return False
-
-        # Private chat with bot is always admin-controlled by the user
-        if event.is_private:
-            return True
-
-        # In groups/supergroups, query sender permissions
-        try:
-            sender_id = event.sender_id
-            if not sender_id:
-                return False
-
-            perms = await bot.get_permissions(event.chat_id, sender_id)
-            if perms and (perms.is_admin or perms.is_creator):
-                return True
-        except Exception as exc:
-            logger.warning("Could not check permissions for user %s: %s", event.sender_id, exc)
-
-        # Silent ignore: do not post public errors in group to keep chat completely clean
-        return False
+        return await _is_sender_admin_event(bot, config, dispatcher, event)
 
     @bot.on(events.NewMessage(pattern=r"^/(?:start|help)(?:@\w+)?$"))
     async def handle_help(event: events.NewMessage.Event) -> None:
@@ -159,7 +178,7 @@ def setup_bot_handlers(
 
     @bot.on(events.NewMessage(pattern=r"^/id(?:@\w+)?$"))
     async def handle_id(event: events.NewMessage.Event) -> None:
-        if not is_authorized_chat(event):
+        if not await is_sender_admin(event):
             return
         text = f"ℹ️ <b>Chat ID:</b> <code>{event.chat_id}</code>"
         await safe_api_call(
