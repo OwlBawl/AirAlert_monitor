@@ -23,13 +23,25 @@ logger = logging.getLogger("AirAlert.Safety")
 T = TypeVar("T")
 
 
+@dataclass(frozen=True)
+class KeywordReservation:
+    """Cooldown entries atomically reserved by one parser processing flow."""
+
+    entries: Tuple[Tuple[str, float], ...]
+
+    @property
+    def words(self) -> Tuple[str, ...]:
+        """Return the normalized keywords owned by this reservation."""
+        return tuple(word for word, _reserved_at in self.entries)
+
+
 class KeywordDebounceCache:
-    """Thread-safe TTL cache to prevent duplicate alerts for the same keyword across all channels."""
+    """Thread-safe TTL cache with atomic keyword cooldown check-and-reserve."""
 
     def __init__(self, alert_ttl_seconds: float = 60.0, cancel_ttl_seconds: float = 300.0) -> None:
         self._alert_ttl = alert_ttl_seconds
         self._cancel_ttl = cancel_ttl_seconds
-        # Stores normalized_word -> timestamp
+        # Stores normalized_word -> reservation timestamp.
         self._cache: OrderedDict[str, float] = OrderedDict()
         self._lock = asyncio.Lock()
 
@@ -38,39 +50,51 @@ class KeywordDebounceCache:
             return self._cancel_ttl
         return self._alert_ttl
 
-    async def filter_uncooled(self, words: Iterable[str], tier: str) -> Tuple[str, ...]:
-        """Return only the words that are not currently in cooldown."""
+    async def check_and_reserve(
+        self,
+        words: Iterable[str],
+        tier: str,
+    ) -> Optional[KeywordReservation]:
+        """Atomically return/reserve currently uncooled keywords, or None if all are cooled."""
         now = time.monotonic()
         ttl = self._get_ttl(tier)
         uncooled: list[str] = []
+        seen: set[str] = set()
 
         async with self._lock:
             for word in words:
                 word_clean = word.strip().lower()
-                if word_clean in self._cache:
-                    if now - self._cache[word_clean] < ttl:
+                if not word_clean or word_clean in seen:
+                    continue
+                seen.add(word_clean)
+
+                cached_at = self._cache.get(word_clean)
+                if cached_at is not None:
+                    if now - cached_at < ttl:
                         continue
-                    else:
-                        del self._cache[word_clean]
-                uncooled.append(word_clean)
-        return tuple(uncooled)
-
-    async def record(self, words: Iterable[str]) -> None:
-        """Record keywords as recently seen."""
-        now = time.monotonic()
-        async with self._lock:
-            for word in words:
-                word_clean = word.strip().lower()
-                if word_clean in self._cache:
                     del self._cache[word_clean]
-                self._cache[word_clean] = now
 
-    async def release(self, words: Iterable[str]) -> None:
-        """Remove keywords from cooldown (e.g. if dispatch failed)."""
+                uncooled.append(word_clean)
+
+            if not uncooled:
+                return None
+
+            entries: list[Tuple[str, float]] = []
+            for word_clean in uncooled:
+                self._cache[word_clean] = now
+                entries.append((word_clean, now))
+
+            return KeywordReservation(entries=tuple(entries))
+
+    async def release(self, reservation: Optional[KeywordReservation]) -> None:
+        """Release only cooldown entries that are still owned by this processing flow."""
+        if reservation is None:
+            return
+
         async with self._lock:
-            for word in words:
-                word_clean = word.strip().lower()
-                self._cache.pop(word_clean, None)
+            for word_clean, reserved_at in reservation.entries:
+                if self._cache.get(word_clean) == reserved_at:
+                    del self._cache[word_clean]
 
     async def clean_expired(self) -> int:
         """Active memory sweep: evicts expired entries based on max TTL."""
@@ -163,7 +187,7 @@ class ServiceMetrics:
     messages_scanned: int = 0
     keywords_matched: int = 0
     alerts_forwarded: int = 0
-    duplicates_filtered: int = 0
+    keyword_cooldown_filtered: int = 0
     stale_messages_dropped: int = 0
     errors_caught: int = 0
     flood_wait_events: int = 0

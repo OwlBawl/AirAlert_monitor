@@ -78,33 +78,69 @@ async def test_word_boundary_and_tier_matching() -> None:
 
 @pytest.mark.asyncio
 async def test_debounce_cache() -> None:
-    """Verify keyword debounce cache prevents repeated alerts for the same keyword."""
-    cache = KeywordDebounceCache(alert_ttl_seconds=1.0, cancel_ttl_seconds=2.0)
+    """Verify atomic keyword reservation, partial cooldown, release, and TTL expiry."""
+    cache = KeywordDebounceCache(alert_ttl_seconds=0.1, cancel_ttl_seconds=0.2)
 
-    # First addition
-    words = ("ракета", "дрон")
-    uncooled1 = await cache.filter_uncooled(words, "critical")
-    assert uncooled1 == ("ракета", "дрон")
-    await cache.record(uncooled1)
+    first = await cache.check_and_reserve(("ракета", "дрон"), "critical")
+    assert first is not None
+    assert first.words == ("ракета", "дрон")
 
-    # Immediate check -> cooled down
-    uncooled2 = await cache.filter_uncooled(words, "critical")
-    assert len(uncooled2) == 0
+    assert await cache.check_and_reserve(("ракета", "дрон"), "critical") is None
 
-    # Partial new words
-    uncooled3 = await cache.filter_uncooled(("ракета", "шахед"), "critical")
-    assert uncooled3 == ("шахед",)
-    
-    # Test release
-    await cache.release(("ракета",))
-    uncooled4 = await cache.filter_uncooled(("ракета",), "critical")
-    assert uncooled4 == ("ракета",)
+    partial = await cache.check_and_reserve(("ракета", "шахед"), "critical")
+    assert partial is not None
+    assert partial.words == ("шахед",)
 
-    # Wait for TTL expiry
-    await cache.record(("шахед",))
-    await asyncio.sleep(1.1)
-    uncooled5 = await cache.filter_uncooled(("шахед",), "critical")
-    assert uncooled5 == ("шахед",)
+    await cache.release(first)
+    again = await cache.check_and_reserve(("ракета",), "critical")
+    assert again is not None
+    assert again.words == ("ракета",)
+
+    await asyncio.sleep(0.11)
+    expired = await cache.check_and_reserve(("ракета",), "critical")
+    assert expired is not None
+
+
+@pytest.mark.asyncio
+async def test_debounce_atomic_concurrency() -> None:
+    """Simultaneous same-keyword candidates must not both reserve."""
+    cache = KeywordDebounceCache(alert_ttl_seconds=60.0)
+
+    results = await asyncio.gather(
+        *(cache.check_and_reserve(("ракета",), "critical") for _ in range(20))
+    )
+    assert sum(result is not None for result in results) == 1
+
+
+@pytest.mark.asyncio
+async def test_debounce_old_release_does_not_remove_newer_reservation() -> None:
+    """A late failed job may not clear a newer cooldown for the same keyword."""
+    cache = KeywordDebounceCache(alert_ttl_seconds=0.05)
+
+    old = await cache.check_and_reserve(("ракета",), "critical")
+    assert old is not None
+
+    await asyncio.sleep(0.06)
+    newer = await cache.check_and_reserve(("ракета",), "critical")
+    assert newer is not None
+
+    await cache.release(old)
+    assert await cache.check_and_reserve(("ракета",), "critical") is None
+
+
+@pytest.mark.asyncio
+async def test_debounce_cancellation_uses_longer_ttl() -> None:
+    """Cancellation tiers continue to use the configured cancellation cooldown."""
+    cache = KeywordDebounceCache(alert_ttl_seconds=0.05, cancel_ttl_seconds=0.15)
+
+    reservation = await cache.check_and_reserve(("відбій",), "cancellation_standard")
+    assert reservation is not None
+
+    await asyncio.sleep(0.06)
+    assert await cache.check_and_reserve(("відбій",), "cancellation_standard") is None
+
+    await asyncio.sleep(0.10)
+    assert await cache.check_and_reserve(("відбій",), "cancellation_standard") is not None
 
 
 @pytest.mark.asyncio

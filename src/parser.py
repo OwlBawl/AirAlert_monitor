@@ -130,36 +130,50 @@ def setup_parser_handlers(
             if not match_result:
                 return
 
-            # 6. Keyword Debounce Filter
-            uncooled_words = await debounce_cache.filter_uncooled(match_result.matched_words, match_result.tier)
-            if not uncooled_words:
-                metrics.duplicates_filtered += 1
+            # 6. Atomically check and reserve keyword cooldown before enqueue.
+            cooldown_reservation = await debounce_cache.check_and_reserve(
+                match_result.matched_words,
+                match_result.tier,
+            )
+            if cooldown_reservation is None:
+                metrics.keyword_cooldown_filtered += 1
                 return
 
-            match_result = KeywordMatch(tier=match_result.tier, matched_words=uncooled_words)
-
-            # 7. Construct AlertJob and enqueue for priority dispatch
-            job = AlertJob(
-                source_chat_id=chat_id,
-                source_chat_title=chat_title,
-                source_chat_username=chat_username,
-                message_id=message_id,
-                message_date=message_date,
-                message_text=raw_text,
-                match=match_result,
-            )
-
-            enqueued = dispatcher.enqueue(job)
-            if enqueued:
-                await debounce_cache.record(uncooled_words)
-                logger.info(
-                    "Matched %s keywords %s in channel '%s' (id=%s, msg_id=%s)",
-                    match_result.tier,
-                    match_result.matched_words,
-                    chat_title,
-                    chat_id,
-                    message_id,
+            try:
+                match_result = KeywordMatch(
+                    tier=match_result.tier,
+                    matched_words=cooldown_reservation.words,
                 )
+
+                # 7. Construct AlertJob and enqueue for priority dispatch.
+                job = AlertJob(
+                    source_chat_id=chat_id,
+                    source_chat_title=chat_title,
+                    source_chat_username=chat_username,
+                    message_id=message_id,
+                    message_date=message_date,
+                    message_text=raw_text,
+                    match=match_result,
+                    cooldown_reservation=cooldown_reservation,
+                )
+
+                enqueued = dispatcher.enqueue(job)
+            except Exception:
+                await debounce_cache.release(cooldown_reservation)
+                raise
+
+            if not enqueued:
+                await debounce_cache.release(cooldown_reservation)
+                return
+
+            logger.info(
+                "Matched %s keywords %s in channel '%s' (id=%s, msg_id=%s)",
+                match_result.tier,
+                match_result.matched_words,
+                chat_title,
+                chat_id,
+                message_id,
+            )
         except Exception as exc:
             logger.error("Error processing incoming message event: %s", exc, exc_info=True)
             metrics.errors_caught += 1

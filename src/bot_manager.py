@@ -428,7 +428,7 @@ def setup_bot_handlers(
             f"📥 <b>Оброблено повідомлень:</b> {metrics.messages_scanned}\n"
             f"🎯 <b>Збігів знайдено:</b> {metrics.keywords_matched}\n"
             f"🚀 <b>Надіслано алертів:</b> {metrics.alerts_forwarded}\n"
-            f"🛡 <b>Відфільтровано дублікатів:</b> {metrics.duplicates_filtered}\n"
+            f"🛡 <b>Відфільтровано за cooldown:</b> {metrics.keyword_cooldown_filtered}\n"
             f"📬 <b>У черзі на відправку:</b> {dispatcher.queue.qsize()}\n"
             f"⚠️ <b>Помилок зафіксовано:</b> {metrics.errors_caught}\n"
             f"⏳ <b>FloodWait пауз:</b> {metrics.flood_wait_events}\n"

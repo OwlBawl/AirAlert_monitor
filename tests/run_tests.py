@@ -182,34 +182,67 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
                     self.assertIn("бр", res9.matched_words)
 
     async def test_debounce_cache(self) -> None:
-        cache = KeywordDebounceCache(alert_ttl_seconds=0.5, cancel_ttl_seconds=1.0)
+        cache = KeywordDebounceCache(alert_ttl_seconds=0.1, cancel_ttl_seconds=0.2)
 
-        # First addition
-        words = ("ракета", "дрон")
-        uncooled1 = await cache.filter_uncooled(words, "critical")
-        self.assertEqual(uncooled1, ("ракета", "дрон"))
-        await cache.record(uncooled1)
+        first = await cache.check_and_reserve(("ракета", "дрон"), "critical")
+        self.assertIsNotNone(first)
+        self.assertEqual(first.words, ("ракета", "дрон"))
 
-        # Immediate check -> cooled down
-        uncooled2 = await cache.filter_uncooled(words, "critical")
-        self.assertEqual(len(uncooled2), 0)
+        self.assertIsNone(await cache.check_and_reserve(("ракета", "дрон"), "critical"))
 
-        # Partial new words
-        uncooled3 = await cache.filter_uncooled(("ракета", "шахед"), "critical")
-        self.assertEqual(uncooled3, ("шахед",))
-        
-        # Test release
-        await cache.release(("ракета",))
-        uncooled4 = await cache.filter_uncooled(("ракета",), "critical")
-        self.assertEqual(uncooled4, ("ракета",))
+        partial = await cache.check_and_reserve(("ракета", "шахед"), "critical")
+        self.assertIsNotNone(partial)
+        self.assertEqual(partial.words, ("шахед",))
+
+        await cache.release(first)
+        again = await cache.check_and_reserve(("ракета",), "critical")
+        self.assertIsNotNone(again)
+        self.assertEqual(again.words, ("ракета",))
+
+    async def test_debounce_atomic_concurrency(self) -> None:
+        cache = KeywordDebounceCache(alert_ttl_seconds=60.0)
+
+        results = await asyncio.gather(
+            *(cache.check_and_reserve(("ракета",), "critical") for _ in range(20))
+        )
+        self.assertEqual(sum(result is not None for result in results), 1)
+
+    async def test_debounce_old_release_does_not_remove_newer_reservation(self) -> None:
+        cache = KeywordDebounceCache(alert_ttl_seconds=0.05)
+
+        old = await cache.check_and_reserve(("ракета",), "critical")
+        self.assertIsNotNone(old)
+
+        await asyncio.sleep(0.06)
+        newer = await cache.check_and_reserve(("ракета",), "critical")
+        self.assertIsNotNone(newer)
+
+        await cache.release(old)
+        self.assertIsNone(await cache.check_and_reserve(("ракета",), "critical"))
+
+    async def test_debounce_cancellation_uses_longer_ttl(self) -> None:
+        cache = KeywordDebounceCache(alert_ttl_seconds=0.05, cancel_ttl_seconds=0.15)
+
+        reservation = await cache.check_and_reserve(("відбій",), "cancellation_standard")
+        self.assertIsNotNone(reservation)
+
+        await asyncio.sleep(0.06)
+        self.assertIsNone(
+            await cache.check_and_reserve(("відбій",), "cancellation_standard")
+        )
+
+        await asyncio.sleep(0.10)
+        self.assertIsNotNone(
+            await cache.check_and_reserve(("відбій",), "cancellation_standard")
+        )
 
     async def test_debounce_clean_expired(self) -> None:
-        cache = KeywordDebounceCache(alert_ttl_seconds=0.2, cancel_ttl_seconds=0.5)
-        await cache.record(("вибух",))
+        cache = KeywordDebounceCache(alert_ttl_seconds=0.05, cancel_ttl_seconds=0.1)
+        reservation = await cache.check_and_reserve(("вибух",), "cancellation_standard")
+        self.assertIsNotNone(reservation)
         self.assertEqual(await cache.size(), 1)
 
-        # Wait for expiry
-        await asyncio.sleep(0.6)
+        await asyncio.sleep(0.11)
         purged = await cache.clean_expired()
         self.assertEqual(purged, 1)
         self.assertEqual(await cache.size(), 0)
