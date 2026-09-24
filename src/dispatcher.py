@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from telethon import TelegramClient
 
 from src.config import AppConfig
-from src.safety import AlertRateLimiter, KeywordDebounceCache, KeywordReservation, metrics, safe_api_call
+from src.safety import AlertRateLimiter, AlertSuppressionCache, SuppressionReservation, metrics, safe_api_call
 from src.storage import KeywordMatch
 
 logger = logging.getLogger("AirAlert.Dispatcher")
@@ -34,7 +34,7 @@ class AlertJob:
     message_date: datetime.datetime
     message_text: str
     match: KeywordMatch
-    cooldown_reservation: Optional[KeywordReservation] = None
+    suppression_reservation: Optional[SuppressionReservation] = None
 
 
 class AlertDispatcher:
@@ -44,13 +44,13 @@ class AlertDispatcher:
         self,
         bot_client: TelegramClient,
         config: AppConfig,
-        debounce_cache: KeywordDebounceCache,
+        suppression_cache: AlertSuppressionCache,
         user_client: Optional[TelegramClient] = None,
     ) -> None:
         self.bot = bot_client
         self.user_client = user_client
         self.config = config
-        self.debounce_cache = debounce_cache
+        self.suppression_cache = suppression_cache
         self.queue: asyncio.PriorityQueue[tuple[int, int, AlertJob]] = asyncio.PriorityQueue(
             maxsize=config.queue_max_size
         )
@@ -179,7 +179,7 @@ class AlertDispatcher:
             except Exception as exc:
                 logger.error("Unexpected error in alert dispatch loop: %s", exc, exc_info=True)
                 metrics.errors_caught += 1
-                await self.debounce_cache.release(job.cooldown_reservation)
+                await self.suppression_cache.release(job.suppression_reservation)
             finally:
                 self.queue.task_done()
 
@@ -226,7 +226,7 @@ class AlertDispatcher:
             target = await self.resolve_target_entity()
         if not target:
             logger.warning("Target chat entity not resolved. Alert queued/dropped.")
-            await self.debounce_cache.release(job.cooldown_reservation)
+            await self.suppression_cache.release(job.suppression_reservation)
             return
 
         alert_message = self.format_alert(job)
@@ -248,7 +248,7 @@ class AlertDispatcher:
 
         if res is None:
             logger.warning("Dispatch failed. Releasing cooldown for %s", job.match.matched_words)
-            await self.debounce_cache.release(job.cooldown_reservation)
+            await self.suppression_cache.release(job.suppression_reservation)
             return
 
         metrics.alerts_forwarded += 1

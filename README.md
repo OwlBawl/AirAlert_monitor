@@ -10,7 +10,7 @@ Production-grade, dual-client Telegram monitoring system built with Telethon. Li
 [ Telegram Channels / Groups ]
               │
               ▼ (Telethon User Client: api_id, api_hash)
-       [ parser.py ] ─── Loop Guard & Keyword Debounce Cache
+       [ parser.py ] ─── Loop Guard & Atomic Alert Suppression
               │
               ▼ (Word-boundary regex: standard & critical)
        [ storage.py ] ─── Dynamic JSON Store (keywords.json, channels.json)
@@ -35,7 +35,7 @@ Production-grade, dual-client Telegram monitoring system built with Telethon. Li
 
 - **Anti-Hang Protection:** Telegram API operations are guarded by strict 10-second timeout wrappers (`asyncio.wait_for`).
 - **Loop Prevention:** Hard-coded loop guard drops any message originating from or directed to `TARGET_CHAT_ID`.
-- **Keyword Debounce:** In-memory cooldown cache (default 60s alert / 300s cancel) suppresses repeat notifications for identical keywords while allowing genuine updates and edits.
+- **Atomic Alert Suppression:** One in-memory lock atomically applies keyword cooldown (default 60s alert / 300s cancel) and normalized message deduplication (default 180s) while keeping their keys and TTLs independent.
 - **Flood Control:** Outbound alert queue enforces a 1 msg/sec rate limit with dynamic `FloodWaitError` backoff.
 - **Connection Watchdog:** 30-second heartbeat pings both clients and triggers automatic reconnections if network drops.
 
@@ -105,7 +105,9 @@ TARGET_CHAT_ID=-100xxxxxxxxxx
 > - `BOT_TOKEN`: Message [@BotFather](https://t.me/BotFather) on Telegram and create a bot via `/newbot`.
 > - `TARGET_CHAT_ID`: Add your bot to the destination group or channel, send `/id` in that chat, and copy the returned ID.
 
-*(Existing credentials in `config/.env` are preserved automatically. You can also edit `config/.env` directly at any time to update tokens).*
+Message deduplication uses `MESSAGE_DEDUP_TTL_SECONDS=180.0` by default. Existing credentials and runtime values in `config/.env` are preserved/synchronized automatically.
+
+*(You can also edit `config/.env` directly at any time to update tokens or timing values.)*
 
 ---
 
@@ -228,7 +230,7 @@ sudo systemctl status airalert.service
 
 ## Running Tests
 
-Run the test suite to verify regex matching, rate-limiting, keyword debounce, and timeout escapes:
+Run the test suite to verify matching, atomic keyword cooldown, message deduplication, rollback behavior, rate limiting, and timeout escapes:
 
 ```bash
 python3 -m unittest tests/run_tests.py
@@ -242,7 +244,7 @@ python3 -m unittest tests/run_tests.py
 AirAlert_monitor/
 ├── src/                    # Application source code
 │   ├── config.py           # Environment & settings loader
-│   ├── safety.py           # Anti-hang, rate-limiter & keyword debounce
+│   ├── safety.py           # Atomic suppression, dedup normalization, rate limiter & API safety
 │   ├── storage.py          # Dynamic keywords/channels store & regex
 │   ├── dispatcher.py       # Queue consumer & alert forwarder
 │   ├── parser.py           # UserClient channel intake listener

@@ -15,7 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.safety import AlertRateLimiter, KeywordDebounceCache, safe_api_call
+from src.safety import AlertRateLimiter, AlertSuppressionCache, build_message_dedup_key, normalize_message_for_dedup, safe_api_call
 from src.storage import DynamicStore
 
 
@@ -77,70 +77,120 @@ async def test_word_boundary_and_tier_matching() -> None:
 
 
 @pytest.mark.asyncio
-async def test_debounce_cache() -> None:
-    """Verify atomic keyword reservation, partial cooldown, release, and TTL expiry."""
-    cache = KeywordDebounceCache(alert_ttl_seconds=0.1, cancel_ttl_seconds=0.2)
+async def test_suppression_cache() -> None:
+    """Verify atomic keyword reservation plus independent message dedup."""
+    cache = AlertSuppressionCache(
+        alert_ttl_seconds=0.1,
+        cancel_ttl_seconds=0.2,
+        message_ttl_seconds=0.3,
+    )
 
-    first = await cache.check_and_reserve(("ракета", "дрон"), "critical")
+    first, reason = await cache.check_and_reserve(("ракета", "дрон"), "critical", "message-a")
     assert first is not None
+    assert reason is None
     assert first.words == ("ракета", "дрон")
 
-    assert await cache.check_and_reserve(("ракета", "дрон"), "critical") is None
+    blocked, reason = await cache.check_and_reserve(("ракета", "дрон"), "critical", "message-b")
+    assert blocked is None
+    assert reason == "keyword_cooldown"
 
-    partial = await cache.check_and_reserve(("ракета", "шахед"), "critical")
-    assert partial is not None
-    assert partial.words == ("шахед",)
-
-    await cache.release(first)
-    again = await cache.check_and_reserve(("ракета",), "critical")
-    assert again is not None
-    assert again.words == ("ракета",)
-
-    await asyncio.sleep(0.11)
-    expired = await cache.check_and_reserve(("ракета",), "critical")
-    assert expired is not None
+    blocked, reason = await cache.check_and_reserve(("шахед",), "critical", "message-a")
+    assert blocked is None
+    assert reason == "message_dedup"
 
 
 @pytest.mark.asyncio
-async def test_debounce_atomic_concurrency() -> None:
-    """Simultaneous same-keyword candidates must not both reserve."""
-    cache = KeywordDebounceCache(alert_ttl_seconds=60.0)
+async def test_suppression_atomic_concurrency() -> None:
+    cache = AlertSuppressionCache(alert_ttl_seconds=60.0, message_ttl_seconds=180.0)
 
-    results = await asyncio.gather(
-        *(cache.check_and_reserve(("ракета",), "critical") for _ in range(20))
+    keyword_results = await asyncio.gather(
+        *(
+            cache.check_and_reserve(("ракета",), "critical", f"message-{index}")
+            for index in range(20)
+        )
     )
-    assert sum(result is not None for result in results) == 1
+    assert sum(reservation is not None for reservation, _reason in keyword_results) == 1
+
+    cache = AlertSuppressionCache(alert_ttl_seconds=60.0, message_ttl_seconds=180.0)
+    message_results = await asyncio.gather(
+        *(
+            cache.check_and_reserve((f"keyword-{index}",), "critical", "same-message")
+            for index in range(20)
+        )
+    )
+    assert sum(reservation is not None for reservation, _reason in message_results) == 1
 
 
 @pytest.mark.asyncio
-async def test_debounce_old_release_does_not_remove_newer_reservation() -> None:
-    """A late failed job may not clear a newer cooldown for the same keyword."""
-    cache = KeywordDebounceCache(alert_ttl_seconds=0.05)
+async def test_suppression_old_release_does_not_remove_newer_reservation() -> None:
+    cache = AlertSuppressionCache(
+        alert_ttl_seconds=0.05,
+        cancel_ttl_seconds=0.05,
+        message_ttl_seconds=0.05,
+    )
 
-    old = await cache.check_and_reserve(("ракета",), "critical")
+    old, _ = await cache.check_and_reserve(("ракета",), "critical", "same-message")
     assert old is not None
 
     await asyncio.sleep(0.06)
-    newer = await cache.check_and_reserve(("ракета",), "critical")
+    newer, _ = await cache.check_and_reserve(("ракета",), "critical", "same-message")
     assert newer is not None
 
     await cache.release(old)
-    assert await cache.check_and_reserve(("ракета",), "critical") is None
+    blocked, reason = await cache.check_and_reserve(("ракета",), "critical", "same-message")
+    assert blocked is None
+    assert reason == "keyword_cooldown"
 
 
 @pytest.mark.asyncio
-async def test_debounce_cancellation_uses_longer_ttl() -> None:
-    """Cancellation tiers continue to use the configured cancellation cooldown."""
-    cache = KeywordDebounceCache(alert_ttl_seconds=0.05, cancel_ttl_seconds=0.15)
+async def test_suppression_cancellation_uses_longer_ttl() -> None:
+    cache = AlertSuppressionCache(
+        alert_ttl_seconds=0.05,
+        cancel_ttl_seconds=0.15,
+        message_ttl_seconds=0.01,
+    )
 
-    reservation = await cache.check_and_reserve(("відбій",), "cancellation_standard")
+    reservation, _ = await cache.check_and_reserve(
+        ("відбій",), "cancellation_standard", "cancel-a"
+    )
     assert reservation is not None
 
     await asyncio.sleep(0.06)
-    assert await cache.check_and_reserve(("відбій",), "cancellation_standard") is None
+    blocked, reason = await cache.check_and_reserve(
+        ("відбій",), "cancellation_standard", "cancel-b"
+    )
+    assert blocked is None
+    assert reason == "keyword_cooldown"
 
     await asyncio.sleep(0.10)
-    assert await cache.check_and_reserve(("відбій",), "cancellation_standard") is not None
+    reservation, reason = await cache.check_and_reserve(
+        ("відбій",), "cancellation_standard", "cancel-c"
+    )
+    assert reservation is not None
+    assert reason is None
+
+
+def test_message_dedup_normalization() -> None:
+    base = "🚀 Ракета на Київ!"
+    variant = "🧨 РАКЕТА,\nна — Київ? @kyiv_monitor1 https://t.me/source/123"
+
+    assert normalize_message_for_dedup(base) == "ракетанакиїв"
+    assert build_message_dedup_key(base) == build_message_dedup_key(variant)
+    assert build_message_dedup_key(base) != build_message_dedup_key("2 ракети на Київ!")
+
+
+def test_message_dedup_text_url_utf16_and_empty_guard() -> None:
+    prefix = "🚀 Ракета на Київ! "
+    anchor = "Підписатися"
+    offset = len(prefix.encode("utf-16-le")) // 2
+    length = len(anchor.encode("utf-16-le")) // 2
+
+    assert build_message_dedup_key(
+        prefix + anchor,
+        ((offset, length),),
+    ) == build_message_dedup_key("Ракета на Київ!")
+
+    assert build_message_dedup_key("🚀 @channel https://t.me/source/123!") is None
 
 
 @pytest.mark.asyncio

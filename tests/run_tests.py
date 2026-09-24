@@ -17,7 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.bot_manager import _is_sender_admin_event, setup_bot_handlers
 from src.config import AppConfig
 from src.dispatcher import AlertDispatcher, AlertJob
-from src.safety import AlertRateLimiter, KeywordDebounceCache, safe_api_call
+from src.safety import AlertRateLimiter, AlertSuppressionCache, build_message_dedup_key, normalize_message_for_dedup, safe_api_call
 from src.storage import DynamicStore, KeywordMatch
 
 
@@ -181,71 +181,289 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(res9.tier, "standard")
                     self.assertIn("бр", res9.matched_words)
 
-    async def test_debounce_cache(self) -> None:
-        cache = KeywordDebounceCache(alert_ttl_seconds=0.1, cancel_ttl_seconds=0.2)
+    async def test_suppression_cache(self) -> None:
+        cache = AlertSuppressionCache(
+            alert_ttl_seconds=0.1,
+            cancel_ttl_seconds=0.2,
+            message_ttl_seconds=0.3,
+        )
 
-        first = await cache.check_and_reserve(("ракета", "дрон"), "critical")
+        first, reason = await cache.check_and_reserve(("ракета", "дрон"), "critical", "message-a")
         self.assertIsNotNone(first)
+        self.assertIsNone(reason)
         self.assertEqual(first.words, ("ракета", "дрон"))
 
-        self.assertIsNone(await cache.check_and_reserve(("ракета", "дрон"), "critical"))
+        blocked, reason = await cache.check_and_reserve(("ракета", "дрон"), "critical", "message-b")
+        self.assertIsNone(blocked)
+        self.assertEqual(reason, "keyword_cooldown")
 
-        partial = await cache.check_and_reserve(("ракета", "шахед"), "critical")
+        partial, reason = await cache.check_and_reserve(("ракета", "шахед"), "critical", "message-c")
         self.assertIsNotNone(partial)
+        self.assertIsNone(reason)
         self.assertEqual(partial.words, ("шахед",))
 
         await cache.release(first)
-        again = await cache.check_and_reserve(("ракета",), "critical")
+        again, reason = await cache.check_and_reserve(("ракета",), "critical", "message-d")
         self.assertIsNotNone(again)
+        self.assertIsNone(reason)
         self.assertEqual(again.words, ("ракета",))
 
-    async def test_debounce_atomic_concurrency(self) -> None:
-        cache = KeywordDebounceCache(alert_ttl_seconds=60.0)
+    async def test_suppression_atomic_keyword_concurrency(self) -> None:
+        cache = AlertSuppressionCache(alert_ttl_seconds=60.0, message_ttl_seconds=180.0)
 
         results = await asyncio.gather(
-            *(cache.check_and_reserve(("ракета",), "critical") for _ in range(20))
+            *(
+                cache.check_and_reserve(("ракета",), "critical", f"message-{index}")
+                for index in range(20)
+            )
         )
-        self.assertEqual(sum(result is not None for result in results), 1)
+        self.assertEqual(sum(reservation is not None for reservation, _reason in results), 1)
 
-    async def test_debounce_old_release_does_not_remove_newer_reservation(self) -> None:
-        cache = KeywordDebounceCache(alert_ttl_seconds=0.05)
+    async def test_suppression_atomic_message_dedup_concurrency(self) -> None:
+        cache = AlertSuppressionCache(alert_ttl_seconds=60.0, message_ttl_seconds=180.0)
 
-        old = await cache.check_and_reserve(("ракета",), "critical")
+        results = await asyncio.gather(
+            *(
+                cache.check_and_reserve((f"keyword-{index}",), "critical", "same-message")
+                for index in range(20)
+            )
+        )
+        self.assertEqual(sum(reservation is not None for reservation, _reason in results), 1)
+        self.assertEqual(
+            sum(reason == "message_dedup" for reservation, reason in results if reservation is None),
+            19,
+        )
+
+    async def test_suppression_policy_precedence_and_independence(self) -> None:
+        cache = AlertSuppressionCache(alert_ttl_seconds=60.0, message_ttl_seconds=180.0)
+
+        first, _ = await cache.check_and_reserve(("ракета",), "critical", "hash-a")
+        self.assertIsNotNone(first)
+
+        # Same keyword + different message: keyword cooldown blocks first.
+        blocked, reason = await cache.check_and_reserve(("ракета",), "critical", "hash-b")
+        self.assertIsNone(blocked)
+        self.assertEqual(reason, "keyword_cooldown")
+
+        # Different keyword + same message: message dedup blocks.
+        blocked, reason = await cache.check_and_reserve(("шахед",), "critical", "hash-a")
+        self.assertIsNone(blocked)
+        self.assertEqual(reason, "message_dedup")
+
+    async def test_suppression_old_release_does_not_remove_newer_reservation(self) -> None:
+        cache = AlertSuppressionCache(
+            alert_ttl_seconds=0.05,
+            cancel_ttl_seconds=0.05,
+            message_ttl_seconds=0.05,
+        )
+
+        old, _ = await cache.check_and_reserve(("ракета",), "critical", "same-message")
         self.assertIsNotNone(old)
 
         await asyncio.sleep(0.06)
-        newer = await cache.check_and_reserve(("ракета",), "critical")
+        newer, _ = await cache.check_and_reserve(("ракета",), "critical", "same-message")
         self.assertIsNotNone(newer)
 
         await cache.release(old)
-        self.assertIsNone(await cache.check_and_reserve(("ракета",), "critical"))
 
-    async def test_debounce_cancellation_uses_longer_ttl(self) -> None:
-        cache = KeywordDebounceCache(alert_ttl_seconds=0.05, cancel_ttl_seconds=0.15)
+        blocked, reason = await cache.check_and_reserve(("ракета",), "critical", "same-message")
+        self.assertIsNone(blocked)
+        self.assertEqual(reason, "keyword_cooldown")
 
-        reservation = await cache.check_and_reserve(("відбій",), "cancellation_standard")
+    async def test_suppression_cancellation_uses_longer_keyword_ttl(self) -> None:
+        cache = AlertSuppressionCache(
+            alert_ttl_seconds=0.05,
+            cancel_ttl_seconds=0.15,
+            message_ttl_seconds=0.01,
+        )
+
+        reservation, _ = await cache.check_and_reserve(
+            ("відбій",), "cancellation_standard", "cancel-message-a"
+        )
         self.assertIsNotNone(reservation)
 
         await asyncio.sleep(0.06)
-        self.assertIsNone(
-            await cache.check_and_reserve(("відбій",), "cancellation_standard")
+        blocked, reason = await cache.check_and_reserve(
+            ("відбій",), "cancellation_standard", "cancel-message-b"
         )
+        self.assertIsNone(blocked)
+        self.assertEqual(reason, "keyword_cooldown")
 
         await asyncio.sleep(0.10)
-        self.assertIsNotNone(
-            await cache.check_and_reserve(("відбій",), "cancellation_standard")
+        reservation, reason = await cache.check_and_reserve(
+            ("відбій",), "cancellation_standard", "cancel-message-c"
+        )
+        self.assertIsNotNone(reservation)
+        self.assertIsNone(reason)
+
+    async def test_message_dedup_ttl_is_independent_from_keyword_ttl(self) -> None:
+        cache = AlertSuppressionCache(
+            alert_ttl_seconds=0.03,
+            cancel_ttl_seconds=0.03,
+            message_ttl_seconds=0.12,
         )
 
-    async def test_debounce_clean_expired(self) -> None:
-        cache = KeywordDebounceCache(alert_ttl_seconds=0.05, cancel_ttl_seconds=0.1)
-        reservation = await cache.check_and_reserve(("вибух",), "cancellation_standard")
+        first, _ = await cache.check_and_reserve(("ракета",), "critical", "same-message")
+        self.assertIsNotNone(first)
+
+        await asyncio.sleep(0.05)
+        blocked, reason = await cache.check_and_reserve(("ракета",), "critical", "same-message")
+        self.assertIsNone(blocked)
+        self.assertEqual(reason, "message_dedup")
+
+        await asyncio.sleep(0.09)
+        again, reason = await cache.check_and_reserve(("ракета",), "critical", "same-message")
+        self.assertIsNotNone(again)
+        self.assertIsNone(reason)
+
+    async def test_suppression_clean_expired(self) -> None:
+        cache = AlertSuppressionCache(
+            alert_ttl_seconds=0.05,
+            cancel_ttl_seconds=0.1,
+            message_ttl_seconds=0.05,
+        )
+        reservation, _ = await cache.check_and_reserve(
+            ("вибух",), "cancellation_standard", "cleanup-message"
+        )
         self.assertIsNotNone(reservation)
-        self.assertEqual(await cache.size(), 1)
+        self.assertEqual(await cache.size(), 2)
 
         await asyncio.sleep(0.11)
         purged = await cache.clean_expired()
-        self.assertEqual(purged, 1)
+        self.assertEqual(purged, 2)
         self.assertEqual(await cache.size(), 0)
+
+    def test_message_dedup_normalization(self) -> None:
+        base = "🚀 Ракета на Київ!"
+        variant = "🧨 РАКЕТА,\nна — Київ?   @kyiv_monitor1 https://t.me/source/123"
+
+        self.assertEqual(
+            normalize_message_for_dedup(base),
+            "ракетанакиїв",
+        )
+        self.assertEqual(
+            build_message_dedup_key(base),
+            build_message_dedup_key(variant),
+        )
+        self.assertNotEqual(
+            build_message_dedup_key(base),
+            build_message_dedup_key("2 ракети на Київ!"),
+        )
+
+    def test_message_dedup_removes_text_url_anchor_with_utf16_offsets(self) -> None:
+        prefix = "🚀 Ракета на Київ! "
+        anchor = "Підписатися"
+        text = prefix + anchor
+
+        offset = len(prefix.encode("utf-16-le")) // 2
+        length = len(anchor.encode("utf-16-le")) // 2
+
+        self.assertEqual(
+            build_message_dedup_key(text, ((offset, length),)),
+            build_message_dedup_key("Ракета на Київ!"),
+        )
+
+    def test_message_dedup_empty_normalization_has_no_key(self) -> None:
+        self.assertIsNone(
+            build_message_dedup_key("🚀 @channel https://t.me/source/123!")
+        )
+
+    async def test_parser_enqueue_failure_releases_full_reservation(self) -> None:
+        import datetime
+        from src.parser import Channel, setup_parser_handlers
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            kw_file = Path(tmp_dir) / "keywords.json"
+            ch_file = Path(tmp_dir) / "channels.json"
+
+            with open(kw_file, "w", encoding="utf-8") as f:
+                json.dump({"critical": ["ракета"], "standard": []}, f)
+            with open(ch_file, "w", encoding="utf-8") as f:
+                json.dump({"channels": ["@mon1tor_ua"]}, f)
+
+            store = DynamicStore(kw_file, ch_file)
+            await store.load_all()
+
+            config = AppConfig(
+                api_id=1,
+                api_hash="hash",
+                bot_token="token",
+                target_chat_id=-1001234567890,
+                user_session_name="user",
+                bot_session_name="bot",
+                keywords_file=kw_file,
+                channels_file=ch_file,
+                max_message_age_seconds=300.0,
+            )
+
+            suppression_cache = AlertSuppressionCache(
+                alert_ttl_seconds=3600.0,
+                message_ttl_seconds=3600.0,
+            )
+            dispatcher = MagicMock()
+            dispatcher.enqueue.side_effect = [False, True]
+
+            mock_client = MagicMock()
+            handlers = []
+            mock_client.on.side_effect = lambda event_type: (lambda fn: handlers.append(fn) or fn)
+            setup_parser_handlers(mock_client, config, store, suppression_cache, dispatcher)
+            handle_message = handlers[0]
+
+            event = MagicMock()
+            event.chat_id = -1001111111111
+            channel = MagicMock(spec=Channel)
+            channel.title = "ППО Радар"
+            channel.username = "mon1tor_ua"
+            event.chat = channel
+            event.message.id = 90001
+            event.message.date = datetime.datetime.now(datetime.timezone.utc)
+            event.message.entities = []
+            event.raw_text = "Ракета на Київ!"
+            event.message.message = event.raw_text
+
+            await handle_message(event)
+            await handle_message(event)
+
+            self.assertEqual(dispatcher.enqueue.call_count, 2)
+
+    async def test_dispatch_failure_releases_full_reservation(self) -> None:
+        cache = AlertSuppressionCache(
+            alert_ttl_seconds=3600.0,
+            message_ttl_seconds=3600.0,
+        )
+        reservation, _ = await cache.check_and_reserve(
+            ("ракета",), "critical", "dispatch-message"
+        )
+        self.assertIsNotNone(reservation)
+
+        config = self._command_config()
+        bot = MagicMock()
+        bot.send_message = AsyncMock(return_value=None)
+        dispatcher = AlertDispatcher(
+            bot_client=bot,
+            config=config,
+            suppression_cache=cache,
+        )
+        dispatcher.set_target_entity(object())
+
+        job = AlertJob(
+            source_chat_id=-1001111111111,
+            source_chat_title="monitor",
+            source_chat_username="monitor",
+            message_id=90002,
+            message_date=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+            message_text="Ракета на Київ!",
+            match=KeywordMatch(tier="critical", matched_words=("ракета",)),
+            suppression_reservation=reservation,
+        )
+
+        await dispatcher._dispatch_single_alert(job)
+
+        again, reason = await cache.check_and_reserve(
+            ("ракета",), "critical", "dispatch-message"
+        )
+        self.assertIsNotNone(again)
+        self.assertIsNone(reason)
 
     async def test_rate_limiter_burst_and_spacing(self) -> None:
         limiter = AlertRateLimiter(
@@ -308,7 +526,7 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
             log_max_bytes=1024,
             log_backup_count=1,
         )
-        dispatcher = AlertDispatcher(bot_client=None, config=config, debounce_cache=KeywordDebounceCache())  # type: ignore[arg-type]
+        dispatcher = AlertDispatcher(bot_client=None, config=config, suppression_cache=AlertSuppressionCache())  # type: ignore[arg-type]
         self.assertEqual(dispatcher.send_target(), config.target_chat_id)
 
         cached = object()
@@ -540,14 +758,14 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
                 max_message_age_seconds=300.0,
             )
 
-            debounce_cache = KeywordDebounceCache(alert_ttl_seconds=3600.0)
-            dispatcher = AlertDispatcher(bot_client=None, config=config, debounce_cache=debounce_cache)  # type: ignore[arg-type]
+            suppression_cache = AlertSuppressionCache(alert_ttl_seconds=3600.0)
+            dispatcher = AlertDispatcher(bot_client=None, config=config, suppression_cache=suppression_cache)  # type: ignore[arg-type]
 
             # Register parser handler on mock client
             mock_client = MagicMock()
             handlers = []
             mock_client.on.side_effect = lambda event_type: (lambda fn: handlers.append(fn) or fn)
-            setup_parser_handlers(mock_client, config, store, debounce_cache, dispatcher)
+            setup_parser_handlers(mock_client, config, store, suppression_cache, dispatcher)
             self.assertTrue(len(handlers) > 0)
             handle_message = handlers[0]
 

@@ -12,7 +12,7 @@ from typing import Optional
 
 try:
     from telethon import TelegramClient, events
-    from telethon.tl.types import Channel, Chat, User
+    from telethon.tl.types import Channel, Chat, MessageEntityTextUrl, User
 except ImportError:
     class TelegramClient:  # type: ignore[no-redef]
         pass
@@ -32,6 +32,9 @@ except ImportError:
     class Chat:  # type: ignore[no-redef]
         title: str = ""
 
+    class MessageEntityTextUrl:  # type: ignore[no-redef]
+        pass
+
     class User:  # type: ignore[no-redef]
         first_name: str = ""
         last_name: Optional[str] = None
@@ -39,7 +42,7 @@ except ImportError:
 
 from src.config import AppConfig
 from src.dispatcher import AlertDispatcher, AlertJob
-from src.safety import KeywordDebounceCache, metrics
+from src.safety import AlertSuppressionCache, build_message_dedup_key, metrics
 from src.storage import DynamicStore, KeywordMatch
 
 logger = logging.getLogger("AirAlert.Parser")
@@ -49,7 +52,7 @@ def setup_parser_handlers(
     user_client: TelegramClient,
     config: AppConfig,
     store: DynamicStore,
-    debounce_cache: KeywordDebounceCache,
+    suppression_cache: AlertSuppressionCache,
     dispatcher: AlertDispatcher,
 ) -> None:
     """Attach message intake event handlers to Telethon User account client."""
@@ -130,22 +133,37 @@ def setup_parser_handlers(
             if not match_result:
                 return
 
-            # 6. Atomically check and reserve keyword cooldown before enqueue.
-            cooldown_reservation = await debounce_cache.check_and_reserve(
+            # 6. Build the full-message dedup key. Telegram TextUrl anchor text
+            # is removed using its UTF-16 entity offsets before normalization.
+            entities = getattr(event.message, "entities", None) or ()
+            text_url_spans = tuple(
+                (entity.offset, entity.length)
+                for entity in entities
+                if isinstance(entity, MessageEntityTextUrl)
+            )
+            message_dedup_key = build_message_dedup_key(raw_text, text_url_spans)
+
+            # 7. Check keyword cooldown and message dedup under one lock. Their
+            # keys/TTLs remain separate and only applicable keys are reserved.
+            suppression_reservation, rejected_by = await suppression_cache.check_and_reserve(
                 match_result.matched_words,
                 match_result.tier,
+                message_dedup_key,
             )
-            if cooldown_reservation is None:
-                metrics.keyword_cooldown_filtered += 1
+            if suppression_reservation is None:
+                if rejected_by == "message_dedup":
+                    metrics.message_dedup_filtered += 1
+                else:
+                    metrics.keyword_cooldown_filtered += 1
                 return
 
             try:
                 match_result = KeywordMatch(
                     tier=match_result.tier,
-                    matched_words=cooldown_reservation.words,
+                    matched_words=suppression_reservation.words,
                 )
 
-                # 7. Construct AlertJob and enqueue for priority dispatch.
+                # 8. Construct AlertJob and enqueue for priority dispatch.
                 job = AlertJob(
                     source_chat_id=chat_id,
                     source_chat_title=chat_title,
@@ -154,16 +172,16 @@ def setup_parser_handlers(
                     message_date=message_date,
                     message_text=raw_text,
                     match=match_result,
-                    cooldown_reservation=cooldown_reservation,
+                    suppression_reservation=suppression_reservation,
                 )
 
                 enqueued = dispatcher.enqueue(job)
             except Exception:
-                await debounce_cache.release(cooldown_reservation)
+                await suppression_cache.release(suppression_reservation)
                 raise
 
             if not enqueued:
-                await debounce_cache.release(cooldown_reservation)
+                await suppression_cache.release(suppression_reservation)
                 return
 
             logger.info(

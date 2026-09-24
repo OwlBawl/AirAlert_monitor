@@ -429,6 +429,7 @@ def setup_bot_handlers(
             f"🎯 <b>Збігів знайдено:</b> {metrics.keywords_matched}\n"
             f"🚀 <b>Надіслано алертів:</b> {metrics.alerts_forwarded}\n"
             f"🛡 <b>Відфільтровано за cooldown:</b> {metrics.keyword_cooldown_filtered}\n"
+            f"♻️ <b>Відфільтровано дублікатів повідомлень:</b> {metrics.message_dedup_filtered}\n"
             f"📬 <b>У черзі на відправку:</b> {dispatcher.queue.qsize()}\n"
             f"⚠️ <b>Помилок зафіксовано:</b> {metrics.errors_caught}\n"
             f"⏳ <b>FloodWait пауз:</b> {metrics.flood_wait_events}\n"

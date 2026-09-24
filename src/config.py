@@ -136,6 +136,7 @@ def _prompt_and_save_missing_config() -> None:
         f"MAX_FLOOD_WAIT_SECONDS={os.getenv('MAX_FLOOD_WAIT_SECONDS', '60.0')}",
         f"KEYWORD_COOLDOWN_ALERT_SECONDS={os.getenv('KEYWORD_COOLDOWN_ALERT_SECONDS', '60.0')}",
         f"KEYWORD_COOLDOWN_CANCEL_SECONDS={os.getenv('KEYWORD_COOLDOWN_CANCEL_SECONDS', '300.0')}",
+        f"MESSAGE_DEDUP_TTL_SECONDS={os.getenv('MESSAGE_DEDUP_TTL_SECONDS', '180.0')}",
         f"ALERT_BURST_MIN_INTERVAL_SECONDS={os.getenv('ALERT_BURST_MIN_INTERVAL_SECONDS', '0.3')}",
         f"ALERT_BURST_CAPACITY={os.getenv('ALERT_BURST_CAPACITY', '3')}",
         f"QUEUE_MAX_SIZE={os.getenv('QUEUE_MAX_SIZE', '100')}",
@@ -177,6 +178,7 @@ class AppConfig:
     max_flood_wait_seconds: float = 60.0
     keyword_cooldown_alert_seconds: float = 60.0
     keyword_cooldown_cancel_seconds: float = 300.0
+    message_dedup_ttl_seconds: float = 180.0
     alert_burst_min_interval_seconds: float = 0.3
     alert_burst_capacity: int = 3
     queue_max_size: int = 100
@@ -216,6 +218,7 @@ class AppConfig:
         max_flood_wait_seconds = _get_env_float("MAX_FLOOD_WAIT_SECONDS", 60.0)
         keyword_cooldown_alert_seconds = _get_env_float("KEYWORD_COOLDOWN_ALERT_SECONDS", 60.0)
         keyword_cooldown_cancel_seconds = _get_env_float("KEYWORD_COOLDOWN_CANCEL_SECONDS", 300.0)
+        message_dedup_ttl_seconds = _get_env_float("MESSAGE_DEDUP_TTL_SECONDS", 180.0)
         alert_burst_min_interval_seconds = _get_env_float("ALERT_BURST_MIN_INTERVAL_SECONDS", 0.3)
         alert_burst_capacity = _get_env_int("ALERT_BURST_CAPACITY", 3)
         queue_max_size = _get_env_int("QUEUE_MAX_SIZE", 100)
@@ -238,6 +241,7 @@ class AppConfig:
             max_flood_wait_seconds=max_flood_wait_seconds,
             keyword_cooldown_alert_seconds=keyword_cooldown_alert_seconds,
             keyword_cooldown_cancel_seconds=keyword_cooldown_cancel_seconds,
+            message_dedup_ttl_seconds=message_dedup_ttl_seconds,
             alert_burst_min_interval_seconds=alert_burst_min_interval_seconds,
             alert_burst_capacity=alert_burst_capacity,
             queue_max_size=queue_max_size,

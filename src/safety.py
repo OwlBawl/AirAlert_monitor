@@ -6,7 +6,9 @@ Provides keyword debounce caching, burst-aware alert pacing, and timeout guards.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import re
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -23,29 +25,121 @@ logger = logging.getLogger("AirAlert.Safety")
 T = TypeVar("T")
 
 
-@dataclass(frozen=True)
-class KeywordReservation:
-    """Cooldown entries atomically reserved by one parser processing flow."""
+# Dedup normalization removes only the presentation/source differences explicitly
+# approved for AirAlert. Other punctuation remains meaningful.
+_URL_RE = re.compile(
+    r"(?i)(?<!\\w)(?:https?://|www\\.|(?:t|telegram)\\.me/)\\S+"
+)
+_USERNAME_RE = re.compile(r"(?<![\\w@])@[A-Za-z0-9_]+\\b")
+_KEYCAP_EMOJI_RE = re.compile(r"[#*0-9]\\ufe0f?\\u20e3")
+_EMOJI_RE = re.compile(
+    "["
+    "\\U0001F000-\\U0001FAFF"
+    "\\u2600-\\u27BF"
+    "\\uFE0E\\uFE0F"
+    "\\u200D"
+    "]"
+)
+_DEDUP_PUNCTUATION_RE = re.compile(r"[!.,?\\-–—−]")
+_WHITESPACE_RE = re.compile(r"\\s+")
 
-    entries: Tuple[Tuple[str, float], ...]
+
+def _remove_utf16_spans(
+    text: str,
+    spans: Iterable[Tuple[int, int]],
+) -> str:
+    """Remove Telegram entity spans expressed as UTF-16 code-unit offset/length pairs."""
+    encoded = text.encode("utf-16-le")
+    raw_spans: list[Tuple[int, int]] = []
+
+    for offset, length in spans:
+        if offset < 0 or length <= 0:
+            continue
+        start = offset * 2
+        end = min((offset + length) * 2, len(encoded))
+        if start < len(encoded) and start < end:
+            raw_spans.append((start, end))
+
+    if not raw_spans:
+        return text
+
+    # Merge overlaps first, then remove from the end so original Telegram
+    # UTF-16 offsets remain valid even when emoji precede a hyperlink.
+    merged: list[list[int]] = []
+    for start, end in sorted(raw_spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+
+    for start, end in reversed(merged):
+        encoded = encoded[:start] + encoded[end:]
+
+    try:
+        return encoded.decode("utf-16-le")
+    except UnicodeDecodeError:
+        # Telegram entities should align to UTF-16 boundaries. Keep original text
+        # rather than corrupting content if malformed metadata is ever received.
+        return text
+
+
+def normalize_message_for_dedup(
+    text: str,
+    text_url_spans: Iterable[Tuple[int, int]] = (),
+) -> str:
+    """Normalize full message text for message deduplication only."""
+    normalized = _remove_utf16_spans(text, text_url_spans)
+    normalized = _URL_RE.sub("", normalized)
+    normalized = _USERNAME_RE.sub("", normalized)
+    normalized = _KEYCAP_EMOJI_RE.sub("", normalized)
+    normalized = _EMOJI_RE.sub("", normalized)
+    normalized = normalized.casefold()
+    normalized = _DEDUP_PUNCTUATION_RE.sub("", normalized)
+    normalized = _WHITESPACE_RE.sub("", normalized)
+    return normalized
+
+
+def build_message_dedup_key(
+    text: str,
+    text_url_spans: Iterable[Tuple[int, int]] = (),
+) -> Optional[str]:
+    """Return SHA-256 of normalized meaningful text, or None when nothing remains."""
+    normalized = normalize_message_for_dedup(text, text_url_spans)
+    if not normalized:
+        return None
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class SuppressionReservation:
+    """Keyword/message entries atomically reserved by one parser processing flow."""
+
+    keyword_entries: Tuple[Tuple[str, float], ...]
+    message_entry: Optional[Tuple[str, float]] = None
 
     @property
     def words(self) -> Tuple[str, ...]:
-        """Return the normalized keywords owned by this reservation."""
-        return tuple(word for word, _reserved_at in self.entries)
+        """Return only the normalized keywords owned by this reservation."""
+        return tuple(word for word, _reserved_at in self.keyword_entries)
 
 
-class KeywordDebounceCache:
-    """Thread-safe TTL cache with atomic keyword cooldown check-and-reserve."""
+class AlertSuppressionCache:
+    """Atomic keyword cooldown plus normalized-message deduplication."""
 
-    def __init__(self, alert_ttl_seconds: float = 60.0, cancel_ttl_seconds: float = 300.0) -> None:
+    def __init__(
+        self,
+        alert_ttl_seconds: float = 60.0,
+        cancel_ttl_seconds: float = 300.0,
+        message_ttl_seconds: float = 180.0,
+    ) -> None:
         self._alert_ttl = alert_ttl_seconds
         self._cancel_ttl = cancel_ttl_seconds
-        # Stores normalized_word -> reservation timestamp.
-        self._cache: OrderedDict[str, float] = OrderedDict()
+        self._message_ttl = message_ttl_seconds
+        self._keyword_cache: OrderedDict[str, float] = OrderedDict()
+        self._message_cache: OrderedDict[str, float] = OrderedDict()
         self._lock = asyncio.Lock()
 
-    def _get_ttl(self, tier: str) -> float:
+    def _get_keyword_ttl(self, tier: str) -> float:
         if tier.startswith("cancellation"):
             return self._cancel_ttl
         return self._alert_ttl
@@ -54,69 +148,106 @@ class KeywordDebounceCache:
         self,
         words: Iterable[str],
         tier: str,
-    ) -> Optional[KeywordReservation]:
-        """Atomically return/reserve currently uncooled keywords, or None if all are cooled."""
+        message_key: Optional[str] = None,
+    ) -> Tuple[Optional[SuppressionReservation], Optional[str]]:
+        """Atomically check both policies and reserve each applicable key independently."""
         now = time.monotonic()
-        ttl = self._get_ttl(tier)
+        keyword_ttl = self._get_keyword_ttl(tier)
         uncooled: list[str] = []
         seen: set[str] = set()
 
         async with self._lock:
+            # Deterministic precedence: keyword cooldown is evaluated first.
             for word in words:
                 word_clean = word.strip().lower()
                 if not word_clean or word_clean in seen:
                     continue
                 seen.add(word_clean)
 
-                cached_at = self._cache.get(word_clean)
+                cached_at = self._keyword_cache.get(word_clean)
                 if cached_at is not None:
-                    if now - cached_at < ttl:
+                    if now - cached_at < keyword_ttl:
                         continue
-                    del self._cache[word_clean]
+                    del self._keyword_cache[word_clean]
 
                 uncooled.append(word_clean)
 
             if not uncooled:
-                return None
+                return None, "keyword_cooldown"
 
-            entries: list[Tuple[str, float]] = []
+            # Empty normalized content has no message hash and skips message dedup.
+            if message_key is not None:
+                message_cached_at = self._message_cache.get(message_key)
+                if message_cached_at is not None:
+                    if now - message_cached_at < self._message_ttl:
+                        return None, "message_dedup"
+                    del self._message_cache[message_key]
+
+            # The candidate passed both checks. Reserve each independent key while
+            # the same lock is still held, closing both check-then-record races.
+            keyword_entries: list[Tuple[str, float]] = []
             for word_clean in uncooled:
-                self._cache[word_clean] = now
-                entries.append((word_clean, now))
+                self._keyword_cache[word_clean] = now
+                keyword_entries.append((word_clean, now))
 
-            return KeywordReservation(entries=tuple(entries))
+            message_entry: Optional[Tuple[str, float]] = None
+            if message_key is not None:
+                self._message_cache[message_key] = now
+                message_entry = (message_key, now)
 
-    async def release(self, reservation: Optional[KeywordReservation]) -> None:
-        """Release only cooldown entries that are still owned by this processing flow."""
+            return (
+                SuppressionReservation(
+                    keyword_entries=tuple(keyword_entries),
+                    message_entry=message_entry,
+                ),
+                None,
+            )
+
+    async def release(self, reservation: Optional[SuppressionReservation]) -> None:
+        """Release only entries still owned by this processing flow."""
         if reservation is None:
             return
 
         async with self._lock:
-            for word_clean, reserved_at in reservation.entries:
-                if self._cache.get(word_clean) == reserved_at:
-                    del self._cache[word_clean]
+            for word_clean, reserved_at in reservation.keyword_entries:
+                if self._keyword_cache.get(word_clean) == reserved_at:
+                    del self._keyword_cache[word_clean]
+
+            if reservation.message_entry is not None:
+                message_key, reserved_at = reservation.message_entry
+                if self._message_cache.get(message_key) == reserved_at:
+                    del self._message_cache[message_key]
 
     async def clean_expired(self) -> int:
-        """Active memory sweep: evicts expired entries based on max TTL."""
+        """Evict expired keyword and message-dedup entries."""
         now = time.monotonic()
         evicted = 0
-        max_possible_ttl = max(self._alert_ttl, self._cancel_ttl)
-        cutoff = now - max_possible_ttl
+        keyword_cutoff = now - max(self._alert_ttl, self._cancel_ttl)
+        message_cutoff = now - self._message_ttl
 
         async with self._lock:
-            while self._cache:
-                oldest_key, oldest_time = next(iter(self._cache.items()))
-                if oldest_time < cutoff:
-                    del self._cache[oldest_key]
+            while self._keyword_cache:
+                oldest_key, oldest_time = next(iter(self._keyword_cache.items()))
+                if oldest_time < keyword_cutoff:
+                    del self._keyword_cache[oldest_key]
                     evicted += 1
                 else:
                     break
+
+            while self._message_cache:
+                oldest_key, oldest_time = next(iter(self._message_cache.items()))
+                if oldest_time < message_cutoff:
+                    del self._message_cache[oldest_key]
+                    evicted += 1
+                else:
+                    break
+
         return evicted
 
     async def size(self) -> int:
-        """Return current cache count."""
+        """Return total number of keyword + message suppression entries."""
         async with self._lock:
-            return len(self._cache)
+            return len(self._keyword_cache) + len(self._message_cache)
 
 
 class AlertRateLimiter:
@@ -188,6 +319,7 @@ class ServiceMetrics:
     keywords_matched: int = 0
     alerts_forwarded: int = 0
     keyword_cooldown_filtered: int = 0
+    message_dedup_filtered: int = 0
     stale_messages_dropped: int = 0
     errors_caught: int = 0
     flood_wait_events: int = 0
