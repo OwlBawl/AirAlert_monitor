@@ -28,20 +28,20 @@ T = TypeVar("T")
 # Dedup normalization removes only the presentation/source differences explicitly
 # approved for AirAlert. Other punctuation remains meaningful.
 _URL_RE = re.compile(
-    r"(?i)(?<!\\w)(?:https?://|www\\.|(?:t|telegram)\\.me/)\\S+"
+    r"(?i)(?<!\w)(?:https?://|www\.|(?:t|telegram)\.me/)\S+"
 )
-_USERNAME_RE = re.compile(r"(?<![\\w@])@[A-Za-z0-9_]+\\b")
-_KEYCAP_EMOJI_RE = re.compile(r"[#*0-9]\\ufe0f?\\u20e3")
+_USERNAME_RE = re.compile(r"(?<![\w@])@[A-Za-z0-9_]+\b")
+_KEYCAP_EMOJI_RE = re.compile("[#*0-9]\ufe0f?\u20e3")
 _EMOJI_RE = re.compile(
     "["
-    "\\U0001F000-\\U0001FAFF"
-    "\\u2600-\\u27BF"
-    "\\uFE0E\\uFE0F"
-    "\\u200D"
+    "\U0001F000-\U0001FAFF"
+    "\u2600-\u27BF"
+    "\uFE0E\uFE0F"
+    "\u200D"
     "]"
 )
-_DEDUP_PUNCTUATION_RE = re.compile(r"[!.,?\\-–—−]")
-_WHITESPACE_RE = re.compile(r"\\s+")
+_DEDUP_PUNCTUATION_RE = re.compile(r"[!.,?\-–—−]")
+_WHITESPACE_RE = re.compile(r"\s+")
 
 
 def _remove_utf16_spans(
