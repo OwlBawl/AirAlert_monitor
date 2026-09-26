@@ -345,6 +345,121 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(blocked)
         self.assertEqual(reason, "keyword_cooldown")
 
+    async def test_active_alert_resets_only_matching_cancellation_bucket(self) -> None:
+        cache = AlertSuppressionCache(
+            alert_ttl_seconds=60.0,
+            cancel_ttl_seconds=300.0,
+            message_ttl_seconds=180.0,
+        )
+
+        std_cancel, _ = await cache.check_and_reserve(
+            ("відбій",), "cancellation_standard", "std-cancel-a"
+        )
+        crit_cancel, _ = await cache.check_and_reserve(
+            ("відбій",), "cancellation_critical", "crit-cancel-a"
+        )
+        self.assertIsNotNone(std_cancel)
+        self.assertIsNotNone(crit_cancel)
+
+        self.assertTrue(await cache.reset_cancellation_for_active_tier("standard"))
+
+        # Standard cancellation gate is open again.
+        std_again, reason = await cache.check_and_reserve(
+            ("скасовано",), "cancellation_standard", "std-cancel-b"
+        )
+        self.assertIsNotNone(std_again)
+        self.assertIsNone(reason)
+
+        # Critical cancellation remains independently cooled.
+        crit_blocked, reason = await cache.check_and_reserve(
+            ("скасовано",), "cancellation_critical", "crit-cancel-b"
+        )
+        self.assertIsNone(crit_blocked)
+        self.assertEqual(reason, "keyword_cooldown")
+
+        self.assertTrue(await cache.reset_cancellation_for_active_tier("critical"))
+        crit_again, reason = await cache.check_and_reserve(
+            ("загрозу знято",), "cancellation_critical", "crit-cancel-c"
+        )
+        self.assertIsNotNone(crit_again)
+        self.assertIsNone(reason)
+
+        # Cancellation tiers never reset each other through this active-alert API.
+        self.assertFalse(
+            await cache.reset_cancellation_for_active_tier("cancellation_standard")
+        )
+
+    async def test_parser_enqueue_failure_does_not_restore_cancellation_reset(self) -> None:
+        import datetime
+        from src.parser import Channel, setup_parser_handlers
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            kw_file = Path(tmp_dir) / "keywords.json"
+            ch_file = Path(tmp_dir) / "channels.json"
+
+            with open(kw_file, "w", encoding="utf-8") as f:
+                json.dump({"critical": [], "standard": ["дрон"], "cancellation": []}, f)
+            with open(ch_file, "w", encoding="utf-8") as f:
+                json.dump({"channels": ["@mon1tor_ua"]}, f)
+
+            store = DynamicStore(kw_file, ch_file)
+            await store.load_all()
+
+            config = AppConfig(
+                api_id=1,
+                api_hash="hash",
+                bot_token="token",
+                target_chat_id=-1001234567890,
+                user_session_name="user",
+                bot_session_name="bot",
+                keywords_file=kw_file,
+                channels_file=ch_file,
+                max_message_age_seconds=300.0,
+            )
+
+            cache = AlertSuppressionCache(
+                alert_ttl_seconds=3600.0,
+                cancel_ttl_seconds=3600.0,
+                message_ttl_seconds=3600.0,
+            )
+            old_cancel, _ = await cache.check_and_reserve(
+                ("відбій",), "cancellation_standard", "old-cancel"
+            )
+            self.assertIsNotNone(old_cancel)
+
+            dispatcher = MagicMock()
+            dispatcher.enqueue.return_value = False
+
+            mock_client = MagicMock()
+            handlers = []
+            mock_client.on.side_effect = lambda event_type: (lambda fn: handlers.append(fn) or fn)
+            setup_parser_handlers(mock_client, config, store, cache, dispatcher)
+            handle_message = handlers[0]
+
+            event = MagicMock()
+            event.chat_id = -1001111111111
+            channel = MagicMock(spec=Channel)
+            channel.title = "ППО Радар"
+            channel.username = "mon1tor_ua"
+            event.chat = channel
+            event.message.id = 90003
+            event.message.date = datetime.datetime.now(datetime.timezone.utc)
+            event.message.entities = []
+            event.raw_text = "Дрон рухається у напрямку міста"
+            event.message.message = event.raw_text
+
+            await handle_message(event)
+            self.assertEqual(dispatcher.enqueue.call_count, 1)
+
+            # The active standard alert reached queue handoff, so its cancellation
+            # reset is final even though enqueue failed and the active reservation
+            # itself was rolled back.
+            cancel_again, reason = await cache.check_and_reserve(
+                ("скасовано",), "cancellation_standard", "new-cancel"
+            )
+            self.assertIsNotNone(cancel_again)
+            self.assertIsNone(reason)
+
     async def test_message_dedup_ttl_is_independent_from_keyword_ttl(self) -> None:
         cache = AlertSuppressionCache(
             alert_ttl_seconds=0.03,

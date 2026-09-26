@@ -219,6 +219,50 @@ async def test_suppression_old_cancellation_release_does_not_remove_newer_bucket
     assert reason == "keyword_cooldown"
 
 
+@pytest.mark.asyncio
+async def test_active_alert_resets_only_matching_cancellation_bucket() -> None:
+    cache = AlertSuppressionCache(
+        alert_ttl_seconds=60.0,
+        cancel_ttl_seconds=300.0,
+        message_ttl_seconds=180.0,
+    )
+
+    std_cancel, _ = await cache.check_and_reserve(
+        ("відбій",), "cancellation_standard", "std-cancel-a"
+    )
+    crit_cancel, _ = await cache.check_and_reserve(
+        ("відбій",), "cancellation_critical", "crit-cancel-a"
+    )
+    assert std_cancel is not None
+    assert crit_cancel is not None
+
+    assert await cache.reset_cancellation_for_active_tier("standard") is True
+
+    std_again, reason = await cache.check_and_reserve(
+        ("скасовано",), "cancellation_standard", "std-cancel-b"
+    )
+    assert std_again is not None
+    assert reason is None
+
+    crit_blocked, reason = await cache.check_and_reserve(
+        ("скасовано",), "cancellation_critical", "crit-cancel-b"
+    )
+    assert crit_blocked is None
+    assert reason == "keyword_cooldown"
+
+    assert await cache.reset_cancellation_for_active_tier("critical") is True
+    crit_again, reason = await cache.check_and_reserve(
+        ("загрозу знято",), "cancellation_critical", "crit-cancel-c"
+    )
+    assert crit_again is not None
+    assert reason is None
+
+    assert (
+        await cache.reset_cancellation_for_active_tier("cancellation_standard")
+        is False
+    )
+
+
 def test_message_dedup_normalization() -> None:
     base = "🚀 Ракета на Київ!"
     variant = "🧨 РАКЕТА,\nна — Київ? @kyiv_monitor1 https://t.me/source/123"

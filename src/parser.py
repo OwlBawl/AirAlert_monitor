@@ -128,7 +128,7 @@ def setup_parser_handlers(
 
             metrics.messages_scanned += 1
 
-            # 5. Keyword matching (checks critical tier first, then standard)
+            # 5. Keyword matching (checks cancellation first, then critical, then standard)
             match_result = store.match_text(raw_text)
             if not match_result:
                 return
@@ -174,6 +174,12 @@ def setup_parser_handlers(
                     match=match_result,
                     suppression_reservation=suppression_reservation,
                 )
+
+                # An accepted active alert immediately opens its matching
+                # cancellation gate before queue handoff. This state transition is
+                # independent from the job reservation and is never rolled back if
+                # enqueue or later Telegram delivery fails.
+                await suppression_cache.reset_cancellation_for_active_tier(match_result.tier)
 
                 enqueued = dispatcher.enqueue(job)
             except Exception:

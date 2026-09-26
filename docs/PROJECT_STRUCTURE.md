@@ -96,6 +96,7 @@ Protects the service against hangs, duplicate notifications, race conditions, an
 - **`class AlertSuppressionCache`**:
   - `__init__(alert_ttl_seconds=60.0, cancel_ttl_seconds=300.0, message_ttl_seconds=180.0)`: Maintains active-keyword, cancellation-tier, and message-hash indexes behind one `asyncio.Lock`.
   - `check_and_reserve(words, tier, message_key)`: Active `critical`/`standard` alerts use per-key cooldown; `cancellation_critical` and `cancellation_standard` each use one independent shared tier bucket; message dedup is checked afterward.
+  - `reset_cancellation_for_active_tier(tier)`: For accepted active alerts, clears `cancellation_standard` for `standard` or `cancellation_critical` for `critical`; this reset is independent from job reservation rollback.
   - `release(reservation)`: Ownership-safe rollback; removes only entries whose stored timestamp still matches the reservation created by that processing flow.
   - `clean_expired() -> int`: Sweeps expired keyword and message entries.
   - `size() -> int`: Returns total suppression-cache entries for health logging.
@@ -172,9 +173,10 @@ User account listener capturing incoming and edited channel messages.
   3. **Message Age Guard**: Drop messages older than `config.max_message_age_seconds` (default 300s).
   4. **Keyword Match**: `store.match_text(raw_text)` runs on the original message text.
   5. **Message Dedup Key**: Remove TextUrl anchor spans and normalize the full message; use SHA-256 only if meaningful text remains.
-  6. **Atomic Suppression**: Under one lock, reject if all matched keywords are cooled; otherwise reject an active message hash; otherwise reserve the free keyword subset and optional message hash independently.
-  7. **Enqueue**: Build `AlertJob` with its suppression reservation and submit to the priority queue.
-  8. **Rollback**: Enqueue failure releases only reservation entries created by that processing flow. Dispatcher send failure uses the same ownership-safe release.
+  6. **Atomic Suppression**: Under one lock, reject if all matched keywords/tier bucket are cooled; otherwise reject an active message hash; otherwise reserve the applicable active-keyword or cancellation-tier entry plus optional message hash.
+  7. **Active Cancellation Reset**: After `AlertJob` construction and immediately before queue handoff, an accepted active `standard`/`critical` alert clears only its corresponding cancellation-tier bucket. This reset is not part of the job reservation and is never restored by enqueue/send failure.
+  8. **Enqueue**: Submit the job to the priority queue.
+  9. **Rollback**: Enqueue failure releases only reservation entries created by that processing flow. Dispatcher send failure uses the same ownership-safe release; cancellation reservations therefore survive only successful enqueue and send.
 
 ---
 

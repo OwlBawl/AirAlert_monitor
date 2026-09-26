@@ -8,6 +8,6 @@
 ## Safety & Anti-Hang Safeguards
 1. **Burst-Aware Rate Limiter**: Queue worker enforcing min intervals (0.3s burst spacing, 1s standard spacing).
 2. **Explicit Timeouts**: `asyncio.wait_for` (10s) on all Telegram API operations to prevent freeze/hang.
-3. **Loop & Atomic Suppression Guard**: Absolute target-chat loop protection plus one locked in-memory gate: active alerts use per-key cooldown (60s default), `cancellation_critical` and `cancellation_standard` use separate shared tier cooldown buckets (300s default each), and normalized message deduplication uses an independent 180s default TTL.
+3. **Loop & Atomic Suppression Guard**: Absolute target-chat loop protection plus one locked in-memory gate: active alerts use per-key cooldown (60s default), `cancellation_critical` and `cancellation_standard` use separate shared tier cooldown buckets (300s default each), and normalized message deduplication uses an independent 180s default TTL. Once an active standard/critical candidate passes suppression and reaches queue handoff, it clears only the matching cancellation-tier bucket; that reset is final even if enqueue or send later fails.
 4. **FloodWait & Error Isolation**: Catch `FloodWaitError` with backoff; isolated per-message try/except.
 5. **Heartbeat & VM Systemd Readiness**: 30-second ping with auto-reconnect, expired keyword/message suppression sweeps, and SIGINT/SIGTERM handlers.

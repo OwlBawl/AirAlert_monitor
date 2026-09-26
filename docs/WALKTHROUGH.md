@@ -6,7 +6,7 @@ The AirAlert dual-client Telegram keyword monitor is built, configured, and test
 
 - [src/config.py](src/config.py): Environment configuration loader with safety constants (1 msg/sec interval, 10s API timeout, 30s heartbeat).
 - [src/safety.py](src/safety.py): 
-  - `AlertSuppressionCache`: Atomic keyword cooldown + normalized cross-channel message dedup cache.
+  - `AlertSuppressionCache`: Atomic active-keyword cooldown + independent shared cancellation-tier buckets + normalized cross-channel message dedup cache; accepted active alerts clear only their matching cancellation bucket before queue handoff.
   - `AlertRateLimiter`: Burst-aware alert pacing mechanism.
   - `safe_api_call`: Strict `asyncio.wait_for(..., timeout=10.0)` wrapper with `FloodWaitError` backoff.
   - `ServiceMetrics`: Telemetry for uptime, scanned messages, keyword-cooldown filtering, message-dedup filtering, and errors.
@@ -29,7 +29,7 @@ Ran 7 tests in 1.389s
 OK
 ```
 - ✅ Word boundary & tier prioritization (critical matched before standard; no false sub-string triggers).
-- ✅ Atomic suppression cache (keyword cooldown + normalized message dedup, independent TTLs, ownership-safe release on failed enqueue/send).
+- ✅ Atomic suppression cache (active per-key cooldown + separate cancellation-tier cooldowns + normalized message dedup, independent TTLs, ownership-safe release on failed enqueue/send) with non-rollback active-alert resets of the matching cancellation tier before queue handoff.
 - ✅ Rate-limiter pacing (burst pacing with minimum intervals).
 - ✅ Safe API call timeout escape (cancelled hung call promptly without freezing).
 - ✅ Dynamic store hot additions/removals and atomic JSON writing.

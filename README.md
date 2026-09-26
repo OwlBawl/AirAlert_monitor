@@ -35,7 +35,7 @@ Production-grade, dual-client Telegram monitoring system built with Telethon. Li
 
 - **Anti-Hang Protection:** Telegram API operations are guarded by strict 10-second timeout wrappers (`asyncio.wait_for`).
 - **Loop Prevention:** Hard-coded loop guard drops any message originating from or directed to `TARGET_CHAT_ID`.
-- **Atomic Alert Suppression:** One in-memory lock atomically applies per-key cooldown to active alerts (default 60s), separate shared cooldown buckets for `cancellation_critical` and `cancellation_standard` (default 300s each), and normalized message deduplication (default 180s).
+- **Atomic Alert Suppression:** One in-memory lock atomically applies per-key cooldown to active alerts (default 60s), separate shared cooldown buckets for `cancellation_critical` and `cancellation_standard` (default 300s each), and normalized message deduplication (default 180s). An accepted active `standard`/`critical` alert clears only its corresponding cancellation bucket immediately before queue handoff; that reset is not restored by later enqueue/send failure.
 - **Flood Control:** Outbound alert queue enforces a 1 msg/sec rate limit with dynamic `FloodWaitError` backoff.
 - **Connection Watchdog:** 30-second heartbeat pings both clients and triggers automatic reconnections if network drops.
 
@@ -230,7 +230,7 @@ sudo systemctl status airalert.service
 
 ## Running Tests
 
-Run the test suite to verify matching, atomic keyword cooldown, message deduplication, rollback behavior, rate limiting, and timeout escapes:
+Run the test suite to verify matching, atomic active/cancellation cooldown behavior, active-alert cancellation resets, message deduplication, rollback behavior, rate limiting, and timeout escapes:
 
 ```bash
 python3 -m unittest tests/run_tests.py

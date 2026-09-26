@@ -224,6 +224,18 @@ class AlertSuppressionCache:
                 None,
             )
 
+    async def reset_cancellation_for_active_tier(self, tier: str) -> bool:
+        """Clear the matching cancellation-tier cooldown for an accepted active alert."""
+        cancellation_tier = {
+            "standard": "cancellation_standard",
+            "critical": "cancellation_critical",
+        }.get(tier)
+        if cancellation_tier is None:
+            return False
+
+        async with self._lock:
+            return self._cancellation_cache.pop(cancellation_tier, None) is not None
+
     async def release(self, reservation: Optional[SuppressionReservation]) -> None:
         """Release only entries still owned by this processing flow."""
         if reservation is None:
