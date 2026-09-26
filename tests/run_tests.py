@@ -270,31 +270,80 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(blocked)
         self.assertEqual(reason, "keyword_cooldown")
 
-    async def test_suppression_cancellation_uses_longer_keyword_ttl(self) -> None:
+    async def test_suppression_cancellation_uses_shared_per_tier_cooldown(self) -> None:
         cache = AlertSuppressionCache(
             alert_ttl_seconds=0.05,
             cancel_ttl_seconds=0.15,
             message_ttl_seconds=0.01,
         )
 
-        reservation, _ = await cache.check_and_reserve(
-            ("відбій",), "cancellation_standard", "cancel-message-a"
+        standard, reason = await cache.check_and_reserve(
+            ("відбій",), "cancellation_standard", "cancel-standard-a"
         )
-        self.assertIsNotNone(reservation)
+        self.assertIsNotNone(standard)
+        self.assertIsNone(reason)
+        self.assertEqual(standard.words, ("відбій",))
 
-        await asyncio.sleep(0.06)
+        # A different cancellation key is still blocked by the same standard bucket.
         blocked, reason = await cache.check_and_reserve(
-            ("відбій",), "cancellation_standard", "cancel-message-b"
+            ("скасовано",), "cancellation_standard", "cancel-standard-b"
         )
         self.assertIsNone(blocked)
         self.assertEqual(reason, "keyword_cooldown")
 
-        await asyncio.sleep(0.10)
-        reservation, reason = await cache.check_and_reserve(
-            ("відбій",), "cancellation_standard", "cancel-message-c"
+        # Critical cancellation has its own independent shared bucket.
+        critical, reason = await cache.check_and_reserve(
+            ("відбій",), "cancellation_critical", "cancel-critical-a"
         )
-        self.assertIsNotNone(reservation)
+        self.assertIsNotNone(critical)
         self.assertIsNone(reason)
+        self.assertEqual(critical.words, ("відбій",))
+
+        blocked, reason = await cache.check_and_reserve(
+            ("загрозу знято",), "cancellation_critical", "cancel-critical-b"
+        )
+        self.assertIsNone(blocked)
+        self.assertEqual(reason, "keyword_cooldown")
+
+        await asyncio.sleep(0.16)
+
+        standard_again, reason = await cache.check_and_reserve(
+            ("інший відбій",), "cancellation_standard", "cancel-standard-c"
+        )
+        self.assertIsNotNone(standard_again)
+        self.assertIsNone(reason)
+
+        critical_again, reason = await cache.check_and_reserve(
+            ("інше скасування",), "cancellation_critical", "cancel-critical-c"
+        )
+        self.assertIsNotNone(critical_again)
+        self.assertIsNone(reason)
+
+    async def test_suppression_old_cancellation_release_does_not_remove_newer_bucket(self) -> None:
+        cache = AlertSuppressionCache(
+            alert_ttl_seconds=0.05,
+            cancel_ttl_seconds=0.05,
+            message_ttl_seconds=0.01,
+        )
+
+        old, _ = await cache.check_and_reserve(
+            ("відбій",), "cancellation_standard", "cancel-old"
+        )
+        self.assertIsNotNone(old)
+
+        await asyncio.sleep(0.06)
+        newer, _ = await cache.check_and_reserve(
+            ("скасовано",), "cancellation_standard", "cancel-new"
+        )
+        self.assertIsNotNone(newer)
+
+        await cache.release(old)
+
+        blocked, reason = await cache.check_and_reserve(
+            ("ще відбій",), "cancellation_standard", "cancel-third"
+        )
+        self.assertIsNone(blocked)
+        self.assertEqual(reason, "keyword_cooldown")
 
     async def test_message_dedup_ttl_is_independent_from_keyword_ttl(self) -> None:
         cache = AlertSuppressionCache(

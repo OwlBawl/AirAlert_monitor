@@ -143,31 +143,80 @@ async def test_suppression_old_release_does_not_remove_newer_reservation() -> No
 
 
 @pytest.mark.asyncio
-async def test_suppression_cancellation_uses_longer_ttl() -> None:
+async def test_suppression_cancellation_uses_shared_per_tier_cooldown() -> None:
     cache = AlertSuppressionCache(
         alert_ttl_seconds=0.05,
         cancel_ttl_seconds=0.15,
         message_ttl_seconds=0.01,
     )
 
-    reservation, _ = await cache.check_and_reserve(
-        ("відбій",), "cancellation_standard", "cancel-a"
+    standard, reason = await cache.check_and_reserve(
+        ("відбій",), "cancellation_standard", "cancel-standard-a"
     )
-    assert reservation is not None
+    assert standard is not None
+    assert reason is None
+    assert standard.words == ("відбій",)
 
-    await asyncio.sleep(0.06)
     blocked, reason = await cache.check_and_reserve(
-        ("відбій",), "cancellation_standard", "cancel-b"
+        ("скасовано",), "cancellation_standard", "cancel-standard-b"
     )
     assert blocked is None
     assert reason == "keyword_cooldown"
 
-    await asyncio.sleep(0.10)
-    reservation, reason = await cache.check_and_reserve(
-        ("відбій",), "cancellation_standard", "cancel-c"
+    critical, reason = await cache.check_and_reserve(
+        ("відбій",), "cancellation_critical", "cancel-critical-a"
     )
-    assert reservation is not None
+    assert critical is not None
     assert reason is None
+    assert critical.words == ("відбій",)
+
+    blocked, reason = await cache.check_and_reserve(
+        ("загрозу знято",), "cancellation_critical", "cancel-critical-b"
+    )
+    assert blocked is None
+    assert reason == "keyword_cooldown"
+
+    await asyncio.sleep(0.16)
+
+    standard_again, reason = await cache.check_and_reserve(
+        ("інший відбій",), "cancellation_standard", "cancel-standard-c"
+    )
+    assert standard_again is not None
+    assert reason is None
+
+    critical_again, reason = await cache.check_and_reserve(
+        ("інше скасування",), "cancellation_critical", "cancel-critical-c"
+    )
+    assert critical_again is not None
+    assert reason is None
+
+
+@pytest.mark.asyncio
+async def test_suppression_old_cancellation_release_does_not_remove_newer_bucket() -> None:
+    cache = AlertSuppressionCache(
+        alert_ttl_seconds=0.05,
+        cancel_ttl_seconds=0.05,
+        message_ttl_seconds=0.01,
+    )
+
+    old, _ = await cache.check_and_reserve(
+        ("відбій",), "cancellation_standard", "cancel-old"
+    )
+    assert old is not None
+
+    await asyncio.sleep(0.06)
+    newer, _ = await cache.check_and_reserve(
+        ("скасовано",), "cancellation_standard", "cancel-new"
+    )
+    assert newer is not None
+
+    await cache.release(old)
+
+    blocked, reason = await cache.check_and_reserve(
+        ("ще відбій",), "cancellation_standard", "cancel-third"
+    )
+    assert blocked is None
+    assert reason == "keyword_cooldown"
 
 
 def test_message_dedup_normalization() -> None:

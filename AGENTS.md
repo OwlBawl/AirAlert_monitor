@@ -14,7 +14,7 @@ This repository contains an asynchronous Telegram channel monitoring service bui
 - **Safety Invariants**:
   - Always use `safe_api_call` in [src/safety.py](src/safety.py) when executing Telegram API operations to enforce the 10-second timeout.
   - Dispatch rate limit is 1 alert per second ([src/safety.py:AlertRateLimiter](src/safety.py)).
-  - Keyword cooldown and normalized message dedup are checked/reserved atomically under one lock; rollback may release only entries created by that processing flow.
+  - Active-alert keyword cooldown, the two independent shared cancellation-tier cooldown buckets, and normalized message dedup are checked/reserved atomically under one lock; rollback may release only entries created by that processing flow.
   - Loop guard in [src/parser.py](src/parser.py) must always reject messages where `chat_id == config.target_chat_id`.
   - Word boundary regex in [src/storage.py](src/storage.py) uses `(?<!\w)...(?!\w)` to support Cyrillic characters.
 

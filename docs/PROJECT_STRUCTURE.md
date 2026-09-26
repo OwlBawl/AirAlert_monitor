@@ -94,8 +94,8 @@ Provides typed, validated configuration loading with fallbacks.
 Protects the service against hangs, duplicate notifications, race conditions, and Telegram API flood limits.
 
 - **`class AlertSuppressionCache`**:
-  - `__init__(alert_ttl_seconds=60.0, cancel_ttl_seconds=300.0, message_ttl_seconds=180.0)`: Maintains separate keyword and message-hash indexes behind one `asyncio.Lock`.
-  - `check_and_reserve(words, tier, message_key)`: Atomically checks keyword cooldown first, then message dedup, and reserves only the applicable free keys.
+  - `__init__(alert_ttl_seconds=60.0, cancel_ttl_seconds=300.0, message_ttl_seconds=180.0)`: Maintains active-keyword, cancellation-tier, and message-hash indexes behind one `asyncio.Lock`.
+  - `check_and_reserve(words, tier, message_key)`: Active `critical`/`standard` alerts use per-key cooldown; `cancellation_critical` and `cancellation_standard` each use one independent shared tier bucket; message dedup is checked afterward.
   - `release(reservation)`: Ownership-safe rollback; removes only entries whose stored timestamp still matches the reservation created by that processing flow.
   - `clean_expired() -> int`: Sweeps expired keyword and message entries.
   - `size() -> int`: Returns total suppression-cache entries for health logging.
