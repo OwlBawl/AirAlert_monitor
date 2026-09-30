@@ -1,6 +1,6 @@
 # AirAlert Monitor — Verification & Walkthrough
 
-The AirAlert dual-client Telegram keyword monitor is built, configured, and tested.
+The AirAlert dual-client Telegram keyword monitor is built and configured. The current `test`-branch changes below require server-side validation before promotion.
 
 ## Changes Overview
 
@@ -20,20 +20,15 @@ The AirAlert dual-client Telegram keyword monitor is built, configured, and test
 
 ---
 
-## Verification Results
+## Verification Status
 
-### Automated Unit Tests
-Command: `python3 -m unittest tests/run_tests.py`
-```
-Ran 7 tests in 1.389s
-OK
-```
-- ✅ Word boundary & tier prioritization (critical matched before standard; no false sub-string triggers).
-- ✅ Atomic suppression cache (active per-key cooldown + separate cancellation-tier cooldowns + normalized message dedup, independent TTLs, ownership-safe release on failed enqueue/send) with non-rollback active-alert resets of the matching cancellation tier before queue handoff.
-- ✅ Rate-limiter pacing (burst pacing with minimum intervals).
-- ✅ Safe API call timeout escape (cancelled hung call promptly without freezing).
-- ✅ Dynamic store hot additions/removals and atomic JSON writing.
+The standard unittest file currently contains **34 test methods**, including new coverage for complete logical-key collection, group-local negatives, mixed-tier cooldown fallback, consumed-key behavior, and ownership-safe rollback.
 
-### Compilation Check
-Command: `python3 -m py_compile main.py src/*.py`
-- ✅ All modules compiled without errors or syntax warnings.
+Server validation is still pending for this branch. Run:
+
+```bash
+python3 -m unittest tests/run_tests.py
+python3 -m py_compile main.py src/*.py
+```
+
+Do not treat the current changes as production-validated until both commands complete successfully in the deployment environment.
