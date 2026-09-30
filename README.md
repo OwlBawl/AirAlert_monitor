@@ -35,7 +35,7 @@ Production-grade, dual-client Telegram monitoring system built with Telethon. Li
 
 - **Anti-Hang Protection:** Telegram API operations are guarded by strict 10-second timeout wrappers (`asyncio.wait_for`).
 - **Loop Prevention:** Hard-coded loop guard drops any message originating from or directed to `TARGET_CHAT_ID`.
-- **Atomic Alert Suppression:** One in-memory lock atomically applies per-key cooldown to active alerts (default 60s), separate shared cooldown buckets for `cancellation_critical` and `cancellation_standard` (default 300s each), and normalized message deduplication (default 180s). An accepted active `standard`/`critical` alert clears only its corresponding cancellation bucket immediately before queue handoff; that reset is not restored by later enqueue/send failure.
+- **Atomic Alert Suppression:** Matching collects all logical JSON keys. Group negatives affect only their own group. For active alerts, existing cooldown is checked per logical key first; every free critical/standard key is reserved, then the highest remaining tier is sent. Cancellation tiers keep independent shared cooldown buckets. Normalized message dedup remains independent. New/edited Telegram messages additionally track consumed logical keys per `(chat_id, message_id)` for `MAX_MESSAGE_AGE_SECONDS + 5s`, so an edit can proceed only for genuinely new keys. Enqueue/send failure ownership-safely rolls back newly created cooldown, dedup, and consumed state; an active alert's cancellation-gate reset remains intentionally non-rollback.
 - **Flood Control:** Outbound alert queue enforces a 1 msg/sec rate limit with dynamic `FloodWaitError` backoff.
 - **Connection Watchdog:** 30-second heartbeat pings both clients and triggers automatic reconnections if network drops.
 
@@ -164,6 +164,12 @@ The parser supports three powerful keyword matching modes across all tiers (`cri
    - Example: `/add_critical -тренування` blocks alerts if *тренування* is mentioned.
    - Example: `/add_key -каб` suppresses standard alerts containing *каб*.
    - Example: `/add_cancel -очікуємо` suppresses cancellation alerts if *очікуємо* is present.
+   - Negative keys are group-local: `critical_negative` affects only critical positives, `standard_negative` only standard positives, and `cancellation_negative` only cancellation positives.
+   - Every JSON string is one logical key even when it contains multiple words; all matching logical keys are collected before suppression.
+
+### Edited-message consumption
+
+For matching `NewMessage` and `MessageEdited` events, AirAlert remembers logical keys already seen for the Telegram `(chat_id, message_id)` for `MAX_MESSAGE_AGE_SECONDS + 5s`. Repeated edits containing only previously seen keys are filtered. An edit that introduces a new configured key gets one new processing attempt for that key. Existing cooldown/dedup filtering keeps the key consumed; enqueue or Telegram delivery failure rolls back newly created consumed/cooldown/dedup state so a later event can retry.
 
 ---
 

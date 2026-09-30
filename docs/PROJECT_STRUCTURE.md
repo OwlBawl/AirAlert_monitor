@@ -94,8 +94,10 @@ Provides typed, validated configuration loading with fallbacks.
 Protects the service against hangs, duplicate notifications, race conditions, and Telegram API flood limits.
 
 - **`class AlertSuppressionCache`**:
-  - `__init__(alert_ttl_seconds=60.0, cancel_ttl_seconds=300.0, message_ttl_seconds=180.0)`: Maintains active-keyword, cancellation-tier, and message-hash indexes behind one `asyncio.Lock`.
-  - `check_and_reserve(words, tier, message_key)`: Active `critical`/`standard` alerts use per-key cooldown; `cancellation_critical` and `cancellation_standard` each use one independent shared tier bucket; message dedup is checked afterward.
+  - `__init__(alert_ttl_seconds=60.0, cancel_ttl_seconds=300.0, message_ttl_seconds=180.0, consumed_ttl_seconds=305.0)`: Maintains active-keyword, cancellation-tier, message-hash, and consumed message-key indexes behind one `asyncio.Lock`.
+  - `reserve_consumed(chat_id, message_id, words)`: Atomically marks only newly seen logical keys for a Telegram message.
+  - `check_and_reserve_active(critical_words, standard_words, message_key, ...)`: Filters existing per-key cooldowns across both active groups, reserves every free key, and selects the highest remaining tier.
+  - `check_and_reserve(words, tier, message_key, ...)`: Compatibility/single-tier API and shared cancellation-tier reservation path; message dedup is checked before new cooldown state is written.
   - `reset_cancellation_for_active_tier(tier)`: For accepted active alerts, clears `cancellation_standard` for `standard` or `cancellation_critical` for `critical`; this reset is independent from job reservation rollback.
   - `release(reservation)`: Ownership-safe rollback; removes only entries whose stored timestamp still matches the reservation created by that processing flow.
   - `clean_expired() -> int`: Sweeps expired keyword and message entries.
@@ -136,7 +138,7 @@ Manages JSON persistence, hot-reloading, and unicode word-boundary regex compila
   - `remove_channel(channel_identifier: Union[int, str]) -> bool`: Removes channel identifier.
   - `get_channels() -> List[Union[int, str]]`: Returns sorted list of active channels.
   - `is_channel_monitored(chat_id: int, username: Optional[str] = None) -> bool`: O(1) membership check matching either numeric ID or username string.
-  - `match_text(text: Optional[str]) -> Optional[KeywordMatch]`: Evaluates text. Checks Critical regex first; if matched, immediately returns `KeywordMatch(tier="critical", ...)`. Otherwise evaluates Standard regex. Returns `None` if no match.
+  - `match_text(text: Optional[str]) -> Optional[KeywordMatch]`: Collects all matching logical JSON keys. Each negative list suppresses only its own positive group. Valid cancellation has message-level precedence and is classified critical from positive critical-key presence without applying `critical_negative` to cancellation classification. Active results retain both valid critical and standard key sets for later per-key cooldown selection.
 
 ---
 
@@ -166,17 +168,17 @@ Processes the alert queue at a controlled rate and formats notifications.
 User account listener capturing incoming and edited channel messages.
 
 - **`setup_parser_handlers(user_client, config, store, suppression_cache, dispatcher) -> None`**:
-  Registers `@user_client.on(events.NewMessage)` and `@user_client.on(events.MessageEdited)`.
+  Registers explicit `NewMessage` and `MessageEdited` wrappers so logs carry `event=new|edited`.
   Execution pipeline:
   1. **Channel Allowlist**: Verify the source channel/group by ID or username.
   2. **Loop Guard**: Reject the configured target alert chat.
   3. **Message Age Guard**: Drop messages older than `config.max_message_age_seconds` (default 300s).
-  4. **Keyword Match**: `store.match_text(raw_text)` runs on the original message text.
-  5. **Message Dedup Key**: Remove TextUrl anchor spans and normalize the full message; use SHA-256 only if meaningful text remains.
-  6. **Atomic Suppression**: Under one lock, reject if all matched keywords/tier bucket are cooled; otherwise reject an active message hash; otherwise reserve the applicable active-keyword or cancellation-tier entry plus optional message hash.
-  7. **Active Cancellation Reset**: After `AlertJob` construction and immediately before queue handoff, an accepted active `standard`/`critical` alert clears only its corresponding cancellation-tier bucket. This reset is not part of the job reservation and is never restored by enqueue/send failure.
-  8. **Enqueue**: Submit the job to the priority queue.
-  9. **Rollback**: Enqueue failure releases only reservation entries created by that processing flow. Dispatcher send failure uses the same ownership-safe release; cancellation reservations therefore survive only successful enqueue and send.
+  4. **Logical-Key Match**: `store.match_text(raw_text)` collects every valid configured key. Negatives affect only their own group; valid cancellation has message-level precedence.
+  5. **Consumed-Key Gate**: Atomically compare all relevant logical keys with `(chat_id, message_id)` history. Only genuinely new keys continue; retention is `MAX_MESSAGE_AGE_SECONDS + 5s`.
+  6. **Message Dedup Key**: Remove TextUrl anchor spans and normalize the full message; use SHA-256 only if meaningful text remains.
+  7. **Cooldown + Dedup**: Active critical/standard keys are checked individually; all free active keys are reserved and the highest remaining tier is selected. Cancellation uses its shared tier bucket. Existing dedup blocks before new cooldown state is written.
+  8. **Active Cancellation Reset**: Immediately before queue handoff, an accepted active alert clears only its selected tier's cancellation bucket. This deletion is intentionally not restored on failure.
+  9. **Enqueue / Delivery Rollback**: Queue or Telegram delivery failure ownership-safely releases every newly created reservation entry, including consumed keys, active/cancellation cooldown, and dedup. Existing cooldown/dedup filtering is not a delivery failure, so newly consumed keys remain consumed.
 
 ---
 
