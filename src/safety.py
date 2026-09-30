@@ -463,7 +463,7 @@ class AlertSuppressionCache:
             )
 
 
-class AlertRateLimiter:class AlertRateLimiter:
+class AlertRateLimiter:
     """Token-bucket limiter: up to burst_capacity priority sends with min_interval spacing, then throttled.
 
     Standard alerts enforce standard_interval_seconds since the last dispatched alert
