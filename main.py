@@ -53,6 +53,7 @@ class AirAlertService:
             alert_ttl_seconds=config.keyword_cooldown_alert_seconds,
             cancel_ttl_seconds=config.keyword_cooldown_cancel_seconds,
             message_ttl_seconds=config.message_dedup_ttl_seconds,
+            consumed_ttl_seconds=config.max_message_age_seconds + 5.0,
         )
 
         # Clients

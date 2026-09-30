@@ -20,8 +20,24 @@ logger = logging.getLogger("AirAlert.Storage")
 class KeywordMatch:
     """Result of keyword matching against message text."""
 
-    tier: str  # "critical" or "standard"
+    tier: str
     matched_words: Tuple[str, ...]
+    critical_words: Tuple[str, ...] = ()
+    standard_words: Tuple[str, ...] = ()
+    cancellation_words: Tuple[str, ...] = ()
+    critical_context_words: Tuple[str, ...] = ()
+
+    @property
+    def consumed_words(self) -> Tuple[str, ...]:
+        """Return every logical configured key relevant to this message."""
+        return tuple(
+            dict.fromkeys(
+                self.cancellation_words
+                + self.critical_context_words
+                + self.critical_words
+                + self.standard_words
+            )
+        )
 
 
 class DynamicStore:
@@ -65,32 +81,28 @@ class DynamicStore:
     def _compile_tier_patterns(
         self, words: Set[str]
     ) -> Tuple[Optional[re.Pattern[str]], List[Tuple[str, Tuple[re.Pattern[str], ...]]]]:
-        r"""Separate single-word and multi-word keys.
-        
-        - Single-word keys use word-start boundary only (?<!\w)word — allowing suffix inflections.
-        - Keys wrapped in square brackets (for example, '[бр]') use boundaries on both
-          sides and therefore match only an exact standalone word or phrase.
-        - Multi-word keys (e.g. 'баліст київ') require all tokens/stems to match anywhere in the text.
+        r"""Compile every configured JSON entry as one logical key.
+
+        - Bare single-word keys match word starts and therefore allow suffix inflections.
+        - Bracketed keys are strict on both sides.
+        - Multi-token keys require every token to match anywhere in the message.
+        - The returned logical-pattern list preserves the original configured key so
+          matching, cooldown, consumed-message tracking, and logs all use the same key.
         """
         single_words: List[str] = []
-        multi_patterns: List[Tuple[str, Tuple[re.Pattern[str], ...]]] = []
+        logical_patterns: List[Tuple[str, Tuple[re.Pattern[str], ...]]] = []
 
-        for raw_phrase in words:
+        for raw_phrase in sorted(words):
             phrase = raw_phrase.strip()
             if not phrase:
                 continue
 
-            # Tokenize by finding bracketed groups or bare words
-            # Example: "[балістика київ]" -> ["[балістика київ]"]
-            # "[балістика] [київ]" -> ["[балістика]", "[київ]"]
-            # "[балістика],[київ]" -> ["[балістика]", "[київ]"] (ignores commas)
-            # "балістика київ" -> ["балістика", "київ"]
             raw_tokens = re.findall(r'\[[^\]]+\]|[^\[\]\s,;+]+', phrase)
             if not raw_tokens:
                 continue
 
-            if len(raw_tokens) == 1:
-                token = raw_tokens[0]
+            token_regexes: List[re.Pattern[str]] = []
+            for token in raw_tokens:
                 is_strict = token.startswith("[") and token.endswith("]")
                 content = token[1:-1].strip() if is_strict else token
                 if not content:
@@ -100,60 +112,27 @@ class DynamicStore:
                 if not inner_tokens:
                     continue
 
-                if len(inner_tokens) == 1:
-                    escaped_word = re.escape(inner_tokens[0])
-                    if is_strict:
-                        single_words.append(escaped_word + r"(?!\w)")
-                    else:
-                        single_words.append(escaped_word)
-                else:
-                    escaped_phrase = r"\s+".join(re.escape(t) for t in inner_tokens)
-                    multi_patterns.append(
-                        (
-                            phrase,
-                            (
-                                re.compile(
-                                    r"(?<!\w)" + escaped_phrase + (r"(?!\w)" if is_strict else ""),
-                                    flags=re.IGNORECASE | re.UNICODE,
-                                ),
-                            ),
-                        )
+                escaped_part = r"\s+".join(re.escape(part) for part in inner_tokens)
+                suffix = r"(?!\w)" if is_strict else ""
+                token_regexes.append(
+                    re.compile(
+                        r"(?<!\w)" + escaped_part + suffix,
+                        flags=re.IGNORECASE | re.UNICODE,
                     )
-            else:
-                token_regexes = []
-                for token in raw_tokens:
-                    is_strict = token.startswith("[") and token.endswith("]")
-                    content = token[1:-1].strip() if is_strict else token
-                    if not content:
-                        continue
+                )
 
-                    inner_tokens = content.split()
-                    if not inner_tokens:
-                        continue
+                if len(raw_tokens) == 1 and len(inner_tokens) == 1:
+                    single_words.append(escaped_part + suffix)
 
-                    escaped_part = r"\s+".join(re.escape(t) for t in inner_tokens)
-                    if is_strict:
-                        token_regexes.append(
-                            re.compile(r"(?<!\w)" + escaped_part + r"(?!\w)", flags=re.IGNORECASE | re.UNICODE)
-                        )
-                    else:
-                        token_regexes.append(
-                            re.compile(r"(?<!\w)" + escaped_part, flags=re.IGNORECASE | re.UNICODE)
-                        )
-
-                if token_regexes:
-                    multi_patterns.append((phrase, tuple(token_regexes)))
+            if token_regexes:
+                logical_patterns.append((phrase, tuple(token_regexes)))
 
         single_regex: Optional[re.Pattern[str]] = None
         if single_words:
-            # Sort longer words first
-            sorted_words = sorted(single_words, key=len, reverse=True)
-            # Word-start boundary only: stems like "бандерол" match inflected forms
-            # ("Бандероль", "Бандеролі") — no right boundary (?!\w) restriction
-            pattern = r"(?<!\w)(?:" + "|".join(sorted_words) + r")"
+            pattern = r"(?<!\w)(?:" + "|".join(sorted(single_words, key=len, reverse=True)) + r")"
             single_regex = re.compile(pattern, flags=re.IGNORECASE | re.UNICODE)
 
-        return single_regex, multi_patterns
+        return single_regex, logical_patterns
 
     def _atomic_write_json(self, file_path: Path, data: Any) -> None:
         """Atomically persist JSON data via temporary file rename to prevent file corruption."""
@@ -459,62 +438,70 @@ class DynamicStore:
         return False
 
     @staticmethod
-    def _find_positive_match(
+    def _find_positive_matches(
         text: str,
-        single_rx: Optional[re.Pattern[str]],
-        multi_pts: List[Tuple[str, Tuple[re.Pattern[str], ...]]],
-    ) -> Optional[Tuple[str, ...]]:
-        """Find matching phrases or words for a tier."""
-        for phrase, token_regexes in multi_pts:
-            if all(rx.search(text) for rx in token_regexes):
-                return (phrase,)
-        if single_rx is not None:
-            matches = single_rx.findall(text)
-            if matches:
-                return tuple(dict.fromkeys(m.lower() for m in matches))
-        return None
+        _single_rx: Optional[re.Pattern[str]],
+        logical_patterns: List[Tuple[str, Tuple[re.Pattern[str], ...]]],
+    ) -> Tuple[str, ...]:
+        """Return all matching logical JSON keys for one keyword group."""
+        return tuple(
+            phrase
+            for phrase, token_regexes in logical_patterns
+            if all(rx.search(text) for rx in token_regexes)
+        )
 
     def match_text(self, text: Optional[str]) -> Optional[KeywordMatch]:
-        """Evaluate text against compiled regexes and patterns, prioritizing cancellation, critical, then standard."""
+        """Collect all valid logical keys, with negatives scoped to their own group."""
         if not text:
             return None
 
-        # 1. Check CANCELLATION tier first
-        cancel_matches = self._find_positive_match(
-            text, self._cancellation_single_regex, self._cancellation_multi_patterns
-        )
-        if cancel_matches:
-            # If negated by cancellation stop-word, suppress alert entirely
-            if self._has_pattern_match(text, self._cancellation_neg_single, self._cancellation_neg_multi):
-                return None
-
-            # Check if this cancellation refers to a critical threat
-            crit_matches = self._find_positive_match(
-                text, self._critical_single_regex, self._critical_multi_patterns
-            )
-            is_crit_cancel = (
-                crit_matches is not None
-                and not self._has_pattern_match(text, self._critical_neg_single, self._critical_neg_multi)
-            )
-            tier = "cancellation_critical" if is_crit_cancel else "cancellation_standard"
-            return KeywordMatch(tier=tier, matched_words=cancel_matches)
-
-        # 2. Check CRITICAL tier
-        crit_matches = self._find_positive_match(
+        critical_matches = self._find_positive_matches(
             text, self._critical_single_regex, self._critical_multi_patterns
         )
-        if crit_matches:
-            # If negated by critical stop-word, suppress alert entirely
-            if self._has_pattern_match(text, self._critical_neg_single, self._critical_neg_multi):
-                return None
-            return KeywordMatch(tier="critical", matched_words=crit_matches)
-
-        # 3. Check STANDARD tier
-        std_matches = self._find_positive_match(
+        standard_matches = self._find_positive_matches(
             text, self._standard_single_regex, self._standard_multi_patterns
         )
-        if std_matches:
-            if not self._has_pattern_match(text, self._standard_neg_single, self._standard_neg_multi):
-                return KeywordMatch(tier="standard", matched_words=std_matches)
+        cancellation_matches = self._find_positive_matches(
+            text, self._cancellation_single_regex, self._cancellation_multi_patterns
+        )
+
+        critical_blocked = bool(critical_matches) and self._has_pattern_match(
+            text, self._critical_neg_single, self._critical_neg_multi
+        )
+        standard_blocked = bool(standard_matches) and self._has_pattern_match(
+            text, self._standard_neg_single, self._standard_neg_multi
+        )
+        cancellation_blocked = bool(cancellation_matches) and self._has_pattern_match(
+            text, self._cancellation_neg_single, self._cancellation_neg_multi
+        )
+
+        valid_critical = () if critical_blocked else critical_matches
+        valid_standard = () if standard_blocked else standard_matches
+        valid_cancellation = () if cancellation_blocked else cancellation_matches
+
+        # A valid cancellation has message-level precedence. Critical negatives
+        # belong only to the active critical group; positive critical keys still
+        # identify whether the cancelled threat is critical.
+        if valid_cancellation:
+            critical_context = critical_matches
+            tier = "cancellation_critical" if critical_context else "cancellation_standard"
+            return KeywordMatch(
+                tier=tier,
+                matched_words=valid_cancellation,
+                critical_words=valid_critical,
+                standard_words=valid_standard,
+                cancellation_words=valid_cancellation,
+                critical_context_words=critical_context,
+            )
+
+        if valid_critical or valid_standard:
+            tier = "critical" if valid_critical else "standard"
+            matched_words = valid_critical if valid_critical else valid_standard
+            return KeywordMatch(
+                tier=tier,
+                matched_words=matched_words,
+                critical_words=valid_critical,
+                standard_words=valid_standard,
+            )
 
         return None

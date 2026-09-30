@@ -110,6 +110,18 @@ def build_message_dedup_key(
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
+ConsumedCacheKey = Tuple[int, int, str]
+ConsumedEntry = Tuple[ConsumedCacheKey, float]
+
+
+@dataclass(frozen=True)
+class ConsumedReservation:
+    """Consumed message-key entries created by one parser attempt."""
+
+    entries: Tuple[ConsumedEntry, ...]
+    words: Tuple[str, ...]
+
+
 @dataclass(frozen=True)
 class SuppressionReservation:
     """Suppression entries atomically reserved by one parser processing flow."""
@@ -118,82 +130,222 @@ class SuppressionReservation:
     matched_words: Tuple[str, ...]
     cancellation_entry: Optional[Tuple[str, float]] = None
     message_entry: Optional[Tuple[str, float]] = None
+    consumed_entries: Tuple[ConsumedEntry, ...] = ()
 
     @property
     def words(self) -> Tuple[str, ...]:
-        """Return real matched keywords for alert formatting/logging."""
+        """Return logical keywords selected for alert formatting/logging."""
         return self.matched_words
 
 
+@dataclass(frozen=True)
+class ActiveSuppressionResult:
+    """Detailed result of mixed critical/standard cooldown evaluation."""
+
+    reservation: Optional[SuppressionReservation]
+    rejected_by: Optional[str]
+    blocked_words: Tuple[str, ...]
+    free_words: Tuple[str, ...]
+    selected_tier: Optional[str]
+
+
 class AlertSuppressionCache:
-    """Atomic active-keyword cooldown, cancellation-tier cooldown, and message dedup."""
+    """Atomic consumed-key tracking, cooldowns, and normalized message dedup."""
 
     def __init__(
         self,
         alert_ttl_seconds: float = 60.0,
         cancel_ttl_seconds: float = 300.0,
         message_ttl_seconds: float = 180.0,
+        consumed_ttl_seconds: float = 305.0,
     ) -> None:
         self._alert_ttl = alert_ttl_seconds
         self._cancel_ttl = cancel_ttl_seconds
         self._message_ttl = message_ttl_seconds
+        self._consumed_ttl = consumed_ttl_seconds
         self._keyword_cache: OrderedDict[str, float] = OrderedDict()
         self._cancellation_cache: OrderedDict[str, float] = OrderedDict()
         self._message_cache: OrderedDict[str, float] = OrderedDict()
+        self._consumed_cache: OrderedDict[ConsumedCacheKey, float] = OrderedDict()
         self._lock = asyncio.Lock()
 
-    async def check_and_reserve(
-        self,
-        words: Iterable[str],
-        tier: str,
-        message_key: Optional[str] = None,
-    ) -> Tuple[Optional[SuppressionReservation], Optional[str]]:
-        """Atomically check suppression policies and reserve the applicable free keys."""
-        normalized_words: list[str] = []
+    @staticmethod
+    def _normalize_words(words: Iterable[str]) -> Tuple[str, ...]:
+        normalized: list[str] = []
         seen: set[str] = set()
         for word in words:
             word_clean = word.strip().lower()
             if not word_clean or word_clean in seen:
                 continue
             seen.add(word_clean)
-            normalized_words.append(word_clean)
+            normalized.append(word_clean)
+        return tuple(normalized)
 
-        if not normalized_words:
-            return None, "keyword_cooldown"
-
-        is_cancellation = tier.startswith("cancellation")
+    async def reserve_consumed(
+        self,
+        chat_id: int,
+        message_id: int,
+        words: Iterable[str],
+    ) -> Tuple[ConsumedReservation, Tuple[str, ...], Tuple[str, ...]]:
+        """Atomically reserve only logical keys not yet consumed for this Telegram message."""
+        normalized_words = self._normalize_words(words)
+        existing_words: list[str] = []
+        new_words: list[str] = []
+        entries: list[ConsumedEntry] = []
 
         async with self._lock:
             now = time.monotonic()
-            keyword_entries: list[Tuple[str, float]] = []
-            cancellation_entry: Optional[Tuple[str, float]] = None
-
-            if is_cancellation:
-                # Cancellation cooldown is shared by tier, not by cancellation key.
-                # cancellation_critical and cancellation_standard are independent buckets.
-                cached_at = self._cancellation_cache.get(tier)
+            for word in normalized_words:
+                cache_key: ConsumedCacheKey = (chat_id, message_id, word)
+                cached_at = self._consumed_cache.get(cache_key)
                 if cached_at is not None:
-                    if now - cached_at < self._cancel_ttl:
-                        return None, "keyword_cooldown"
-                    del self._cancellation_cache[tier]
-                accepted_words = tuple(normalized_words)
-            else:
-                # Active critical/standard alerts keep independent per-key cooldowns.
-                uncooled: list[str] = []
-                for word_clean in normalized_words:
-                    cached_at = self._keyword_cache.get(word_clean)
-                    if cached_at is not None:
-                        if now - cached_at < self._alert_ttl:
-                            continue
-                        del self._keyword_cache[word_clean]
-                    uncooled.append(word_clean)
+                    if now - cached_at < self._consumed_ttl:
+                        existing_words.append(word)
+                        continue
+                    del self._consumed_cache[cache_key]
 
-                if not uncooled:
+                self._consumed_cache[cache_key] = now
+                entries.append((cache_key, now))
+                new_words.append(word)
+
+        return (
+            ConsumedReservation(entries=tuple(entries), words=tuple(new_words)),
+            tuple(existing_words),
+            tuple(new_words),
+        )
+
+    async def release_consumed(self, reservation: Optional[ConsumedReservation]) -> None:
+        """Ownership-safely release consumed entries created by one failed attempt."""
+        if reservation is None:
+            return
+        async with self._lock:
+            for cache_key, reserved_at in reservation.entries:
+                if self._consumed_cache.get(cache_key) == reserved_at:
+                    del self._consumed_cache[cache_key]
+
+    async def check_and_reserve_active(
+        self,
+        critical_words: Iterable[str],
+        standard_words: Iterable[str],
+        message_key: Optional[str] = None,
+        consumed_entries: Tuple[ConsumedEntry, ...] = (),
+    ) -> ActiveSuppressionResult:
+        """Filter active keys by existing cooldown, then reserve every free key atomically."""
+        normalized_critical = self._normalize_words(critical_words)
+        critical_set = set(normalized_critical)
+        normalized_standard = tuple(
+            word for word in self._normalize_words(standard_words) if word not in critical_set
+        )
+
+        if not normalized_critical and not normalized_standard:
+            return ActiveSuppressionResult(None, "keyword_cooldown", (), (), None)
+
+        async with self._lock:
+            now = time.monotonic()
+            blocked_words: list[str] = []
+            free_critical: list[str] = []
+            free_standard: list[str] = []
+
+            for word in normalized_critical:
+                cached_at = self._keyword_cache.get(word)
+                if cached_at is not None:
+                    if now - cached_at < self._alert_ttl:
+                        blocked_words.append(word)
+                        continue
+                    del self._keyword_cache[word]
+                free_critical.append(word)
+
+            for word in normalized_standard:
+                cached_at = self._keyword_cache.get(word)
+                if cached_at is not None:
+                    if now - cached_at < self._alert_ttl:
+                        blocked_words.append(word)
+                        continue
+                    del self._keyword_cache[word]
+                free_standard.append(word)
+
+            free_words = tuple(free_critical + free_standard)
+            selected_tier = "critical" if free_critical else ("standard" if free_standard else None)
+            if not free_words:
+                return ActiveSuppressionResult(
+                    None,
+                    "keyword_cooldown",
+                    tuple(blocked_words),
+                    (),
+                    None,
+                )
+
+            # Existing message dedup blocks before creating any new cooldown entries.
+            if message_key is not None:
+                message_cached_at = self._message_cache.get(message_key)
+                if message_cached_at is not None:
+                    if now - message_cached_at < self._message_ttl:
+                        return ActiveSuppressionResult(
+                            None,
+                            "message_dedup",
+                            tuple(blocked_words),
+                            free_words,
+                            selected_tier,
+                        )
+                    del self._message_cache[message_key]
+
+            keyword_entries: list[Tuple[str, float]] = []
+            for word in free_words:
+                self._keyword_cache[word] = now
+                keyword_entries.append((word, now))
+
+            message_entry: Optional[Tuple[str, float]] = None
+            if message_key is not None:
+                self._message_cache[message_key] = now
+                message_entry = (message_key, now)
+
+            selected_words = (
+                tuple(free_critical) if selected_tier == "critical" else tuple(free_standard)
+            )
+            reservation = SuppressionReservation(
+                keyword_entries=tuple(keyword_entries),
+                matched_words=selected_words,
+                message_entry=message_entry,
+                consumed_entries=consumed_entries,
+            )
+            return ActiveSuppressionResult(
+                reservation,
+                None,
+                tuple(blocked_words),
+                free_words,
+                selected_tier,
+            )
+
+    async def check_and_reserve(
+        self,
+        words: Iterable[str],
+        tier: str,
+        message_key: Optional[str] = None,
+        consumed_entries: Tuple[ConsumedEntry, ...] = (),
+    ) -> Tuple[Optional[SuppressionReservation], Optional[str]]:
+        """Check/reserve one tier; kept as the cancellation and compatibility API."""
+        normalized_words = self._normalize_words(words)
+        if not normalized_words:
+            return None, "keyword_cooldown"
+
+        if not tier.startswith("cancellation"):
+            result = await self.check_and_reserve_active(
+                normalized_words if tier == "critical" else (),
+                normalized_words if tier != "critical" else (),
+                message_key,
+                consumed_entries,
+            )
+            return result.reservation, result.rejected_by
+
+        async with self._lock:
+            now = time.monotonic()
+            cached_at = self._cancellation_cache.get(tier)
+            if cached_at is not None:
+                if now - cached_at < self._cancel_ttl:
                     return None, "keyword_cooldown"
-                accepted_words = tuple(uncooled)
+                del self._cancellation_cache[tier]
 
-            # Keyword/tier cooldown is checked first. Only an eligible candidate
-            # reaches message dedup, so rejected candidates reserve nothing.
+            # Existing dedup blocks without creating a new cancellation cooldown.
             if message_key is not None:
                 message_cached_at = self._message_cache.get(message_key)
                 if message_cached_at is not None:
@@ -201,13 +353,8 @@ class AlertSuppressionCache:
                         return None, "message_dedup"
                     del self._message_cache[message_key]
 
-            if is_cancellation:
-                self._cancellation_cache[tier] = now
-                cancellation_entry = (tier, now)
-            else:
-                for word_clean in accepted_words:
-                    self._keyword_cache[word_clean] = now
-                    keyword_entries.append((word_clean, now))
+            self._cancellation_cache[tier] = now
+            cancellation_entry = (tier, now)
 
             message_entry: Optional[Tuple[str, float]] = None
             if message_key is not None:
@@ -216,10 +363,11 @@ class AlertSuppressionCache:
 
             return (
                 SuppressionReservation(
-                    keyword_entries=tuple(keyword_entries),
-                    matched_words=accepted_words,
+                    keyword_entries=(),
+                    matched_words=normalized_words,
                     cancellation_entry=cancellation_entry,
                     message_entry=message_entry,
+                    consumed_entries=consumed_entries,
                 ),
                 None,
             )
@@ -237,7 +385,7 @@ class AlertSuppressionCache:
             return self._cancellation_cache.pop(cancellation_tier, None) is not None
 
     async def release(self, reservation: Optional[SuppressionReservation]) -> None:
-        """Release only entries still owned by this processing flow."""
+        """Release only state still owned by this failed processing flow."""
         if reservation is None:
             return
 
@@ -256,13 +404,18 @@ class AlertSuppressionCache:
                 if self._message_cache.get(message_key) == reserved_at:
                     del self._message_cache[message_key]
 
+            for cache_key, reserved_at in reservation.consumed_entries:
+                if self._consumed_cache.get(cache_key) == reserved_at:
+                    del self._consumed_cache[cache_key]
+
     async def clean_expired(self) -> int:
-        """Evict expired active-keyword, cancellation-tier, and message-dedup entries."""
+        """Evict expired cooldown, dedup, and consumed message-key entries."""
         now = time.monotonic()
         evicted = 0
         keyword_cutoff = now - self._alert_ttl
         cancellation_cutoff = now - self._cancel_ttl
         message_cutoff = now - self._message_ttl
+        consumed_cutoff = now - self._consumed_ttl
 
         async with self._lock:
             while self._keyword_cache:
@@ -289,19 +442,28 @@ class AlertSuppressionCache:
                 else:
                     break
 
+            while self._consumed_cache:
+                oldest_key, oldest_time = next(iter(self._consumed_cache.items()))
+                if oldest_time < consumed_cutoff:
+                    del self._consumed_cache[oldest_key]
+                    evicted += 1
+                else:
+                    break
+
         return evicted
 
     async def size(self) -> int:
-        """Return total number of active-keyword, cancellation-tier, and message entries."""
+        """Return total entries across cooldown, dedup, and consumed indexes."""
         async with self._lock:
             return (
                 len(self._keyword_cache)
                 + len(self._cancellation_cache)
                 + len(self._message_cache)
+                + len(self._consumed_cache)
             )
 
 
-class AlertRateLimiter:
+class AlertRateLimiter:class AlertRateLimiter:
     """Token-bucket limiter: up to burst_capacity priority sends with min_interval spacing, then throttled.
 
     Standard alerts enforce standard_interval_seconds since the last dispatched alert

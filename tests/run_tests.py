@@ -179,7 +179,7 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
                     res9 = store.match_text(f"2 реактивних {strict_variant}")
                     self.assertIsNotNone(res9)
                     self.assertEqual(res9.tier, "standard")
-                    self.assertIn("бр", res9.matched_words)
+                    self.assertIn("[бр]", res9.matched_words)
 
     async def test_suppression_cache(self) -> None:
         cache = AlertSuppressionCache(
@@ -778,9 +778,12 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(m1)
             self.assertEqual(m1.tier, "critical")
 
-            # Blocked critical match by negative stop-word
+            # Critical negative suppresses only the critical group; the valid
+            # standard "пуск" key can still continue.
             m2 = store.match_text("Пуски крилатих ракет (навчання екіпажів)")
-            self.assertIsNone(m2)
+            self.assertIsNotNone(m2)
+            self.assertEqual(m2.tier, "standard")
+            self.assertIn("пуск", m2.matched_words)
 
             # Positive standard match
             m3 = store.match_text("Зафіксовано пуск невідомої цілі")
@@ -821,9 +824,247 @@ class TestAirAlert(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(m_std_cancel)
             self.assertEqual(m_std_cancel.tier, "cancellation_standard")
 
-            # Cancellation negated by cancellation stop-word
+            # Cancellation negative suppresses only cancellation; the valid
+            # standard "шахед" key remains eligible.
             m_neg_cancel = store.match_text("Відбій по шахедах, але очікуємо пусків з моря")
-            self.assertIsNone(m_neg_cancel)
+            self.assertIsNotNone(m_neg_cancel)
+            self.assertEqual(m_neg_cancel.tier, "standard")
+            self.assertIn("шахед", m_neg_cancel.matched_words)
+
+    async def test_matching_collects_all_logical_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            kw_file = Path(tmp_dir) / "keywords.json"
+            ch_file = Path(tmp_dir) / "channels.json"
+            with open(kw_file, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "critical": ["баліст київ", "ракет київ"],
+                        "critical_negative": [],
+                        "standard": ["дарниц київ", "осокорки"],
+                        "standard_negative": [],
+                        "cancellation": [],
+                        "cancellation_negative": [],
+                    },
+                    f,
+                )
+
+            store = DynamicStore(kw_file, ch_file)
+            await store.load_all()
+            match = store.match_text("Балістика і ракета на Київ, курсом на Дарницю")
+            self.assertIsNotNone(match)
+            self.assertEqual(match.tier, "critical")
+            self.assertEqual(set(match.critical_words), {"баліст київ", "ракет київ"})
+            self.assertEqual(set(match.standard_words), {"дарниц київ"})
+            self.assertEqual(
+                set(match.consumed_words),
+                {"баліст київ", "ракет київ", "дарниц київ"},
+            )
+
+    async def test_negative_groups_are_isolated_and_cancel_classification_uses_positive_critical(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            kw_file = Path(tmp_dir) / "keywords.json"
+            ch_file = Path(tmp_dir) / "channels.json"
+            with open(kw_file, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "critical": ["баліст київ"],
+                        "critical_negative": ["відбій", "ніч"],
+                        "standard": ["дарниц київ"],
+                        "standard_negative": [],
+                        "cancellation": ["[київ] відбій"],
+                        "cancellation_negative": ["крим"],
+                    },
+                    f,
+                )
+
+            store = DynamicStore(kw_file, ch_file)
+            await store.load_all()
+
+            cancel = store.match_text("Київ відбій, балістика на Київ")
+            self.assertIsNotNone(cancel)
+            self.assertEqual(cancel.tier, "cancellation_critical")
+            self.assertIn("[київ] відбій", cancel.cancellation_words)
+            self.assertIn("баліст київ", cancel.critical_context_words)
+
+            active = store.match_text("Ніч: балістика на Київ, курс на Дарницю")
+            self.assertIsNotNone(active)
+            self.assertEqual(active.tier, "standard")
+            self.assertEqual(active.critical_words, ())
+            self.assertIn("дарниц київ", active.standard_words)
+
+            cancel_blocked = store.match_text("Крим. Київ відбій, район Дарниці")
+            self.assertIsNotNone(cancel_blocked)
+            self.assertEqual(cancel_blocked.tier, "standard")
+            self.assertEqual(cancel_blocked.cancellation_words, ())
+            self.assertIn("дарниц київ", cancel_blocked.standard_words)
+
+    async def test_mixed_active_cooldown_falls_back_to_free_tier(self) -> None:
+        cache = AlertSuppressionCache(
+            alert_ttl_seconds=60.0,
+            message_ttl_seconds=180.0,
+        )
+        first, _ = await cache.check_and_reserve(
+            ("київ балістика",), "critical", "first-critical"
+        )
+        self.assertIsNotNone(first)
+
+        result = await cache.check_and_reserve_active(
+            ("київ балістика",),
+            ("дарниц київ",),
+            "mixed-standard",
+        )
+        self.assertIsNotNone(result.reservation)
+        self.assertEqual(result.selected_tier, "standard")
+        self.assertEqual(result.blocked_words, ("київ балістика",))
+        self.assertEqual(result.reservation.words, ("дарниц київ",))
+
+        cache = AlertSuppressionCache(
+            alert_ttl_seconds=60.0,
+            message_ttl_seconds=180.0,
+        )
+        first, _ = await cache.check_and_reserve(
+            ("дарниц київ",), "standard", "first-standard"
+        )
+        self.assertIsNotNone(first)
+
+        result = await cache.check_and_reserve_active(
+            ("київ балістика",),
+            ("дарниц київ",),
+            "mixed-critical",
+        )
+        self.assertIsNotNone(result.reservation)
+        self.assertEqual(result.selected_tier, "critical")
+        self.assertEqual(result.blocked_words, ("дарниц київ",))
+        self.assertEqual(result.reservation.words, ("київ балістика",))
+
+    async def test_mixed_active_reserves_all_free_keys(self) -> None:
+        cache = AlertSuppressionCache(
+            alert_ttl_seconds=60.0,
+            message_ttl_seconds=180.0,
+        )
+        result = await cache.check_and_reserve_active(
+            ("київ балістика",),
+            ("дарниц київ",),
+            "mixed-free",
+        )
+        self.assertIsNotNone(result.reservation)
+        self.assertEqual(result.selected_tier, "critical")
+        self.assertEqual(
+            {word for word, _reserved_at in result.reservation.keyword_entries},
+            {"київ балістика", "дарниц київ"},
+        )
+
+        blocked, reason = await cache.check_and_reserve(
+            ("дарниц київ",), "standard", "later-standard"
+        )
+        self.assertIsNone(blocked)
+        self.assertEqual(reason, "keyword_cooldown")
+
+    async def test_consumed_keys_allow_only_new_keys_and_expire(self) -> None:
+        cache = AlertSuppressionCache(consumed_ttl_seconds=0.05)
+
+        first, existing, new = await cache.reserve_consumed(
+            -1001, 42, ("київ балістика", "дарниц київ")
+        )
+        self.assertEqual(existing, ())
+        self.assertEqual(set(new), {"київ балістика", "дарниц київ"})
+        self.assertEqual(set(first.words), set(new))
+
+        second, existing, new = await cache.reserve_consumed(
+            -1001, 42, ("київ балістика", "дарниц київ", "осокорки")
+        )
+        self.assertEqual(set(existing), {"київ балістика", "дарниц київ"})
+        self.assertEqual(new, ("осокорки",))
+        self.assertEqual(second.words, ("осокорки",))
+
+        await asyncio.sleep(0.06)
+        _third, existing, new = await cache.reserve_consumed(
+            -1001, 42, ("київ балістика",)
+        )
+        self.assertEqual(existing, ())
+        self.assertEqual(new, ("київ балістика",))
+
+    async def test_existing_filter_keeps_newly_consumed_key(self) -> None:
+        cache = AlertSuppressionCache(
+            alert_ttl_seconds=60.0,
+            message_ttl_seconds=180.0,
+            consumed_ttl_seconds=305.0,
+        )
+        cooled, _ = await cache.check_and_reserve(
+            ("київ балістика",), "critical", "cooled-message"
+        )
+        self.assertIsNotNone(cooled)
+
+        consumed, _existing, new = await cache.reserve_consumed(
+            -1001, 77, ("київ балістика",)
+        )
+        self.assertEqual(new, ("київ балістика",))
+        result = await cache.check_and_reserve_active(
+            ("київ балістика",),
+            (),
+            "different-message",
+            consumed_entries=consumed.entries,
+        )
+        self.assertIsNone(result.reservation)
+        self.assertEqual(result.rejected_by, "keyword_cooldown")
+
+        _again, existing, new = await cache.reserve_consumed(
+            -1001, 77, ("київ балістика",)
+        )
+        self.assertEqual(existing, ("київ балістика",))
+        self.assertEqual(new, ())
+
+    async def test_failed_delivery_reservation_rolls_back_consumed_and_is_ownership_safe(self) -> None:
+        cache = AlertSuppressionCache(
+            alert_ttl_seconds=0.05,
+            message_ttl_seconds=0.05,
+            consumed_ttl_seconds=0.05,
+        )
+
+        consumed, _existing, new = await cache.reserve_consumed(
+            -1001, 88, ("київ балістика",)
+        )
+        self.assertEqual(new, ("київ балістика",))
+        result = await cache.check_and_reserve_active(
+            ("київ балістика",),
+            (),
+            "rollback-message",
+            consumed_entries=consumed.entries,
+        )
+        self.assertIsNotNone(result.reservation)
+
+        await cache.release(result.reservation)
+
+        _retry, existing, new = await cache.reserve_consumed(
+            -1001, 88, ("київ балістика",)
+        )
+        self.assertEqual(existing, ())
+        self.assertEqual(new, ("київ балістика",))
+
+        old_consumed, _existing, _new = await cache.reserve_consumed(
+            -1001, 99, ("дарниц київ",)
+        )
+        old_result = await cache.check_and_reserve_active(
+            ("дарниц київ",),
+            (),
+            "old-owner",
+            consumed_entries=old_consumed.entries,
+        )
+        self.assertIsNotNone(old_result.reservation)
+
+        await asyncio.sleep(0.06)
+        _newer_consumed, _existing, newer = await cache.reserve_consumed(
+            -1001, 99, ("дарниц київ",)
+        )
+        self.assertEqual(newer, ("дарниц київ",))
+
+        await cache.release(old_result.reservation)
+
+        _check, existing, new = await cache.reserve_consumed(
+            -1001, 99, ("дарниц київ",)
+        )
+        self.assertEqual(existing, ("дарниц київ",))
+        self.assertEqual(new, ())
 
     def test_alert_formatting(self) -> None:
         import datetime

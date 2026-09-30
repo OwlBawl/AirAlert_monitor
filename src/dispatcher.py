@@ -247,7 +247,10 @@ class AlertDispatcher:
         )
 
         if res is None:
-            logger.warning("Dispatch failed. Releasing cooldown for %s", job.match.matched_words)
+            logger.warning(
+                "Dispatch failed. Releasing suppression reservation for %s",
+                job.match.matched_words,
+            )
             await self.suppression_cache.release(job.suppression_reservation)
             return
 
